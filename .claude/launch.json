@@ -4,16 +4,61 @@
     {
       "name": "backend",
       "runtimeExecutable": "/Users/sailikith/Desktop/network-detective/.venv/bin/uvicorn",
-      "runtimeArgs": ["src.main:app", "--host", "127.0.0.1", "--port", "8000", "--app-dir", "/Users/sailikith/Desktop/network-detective"],
+      "runtimeArgs": [
+        "src.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--app-dir",
+        "/Users/sailikith/Desktop/network-detective"
+      ],
       "cwd": "/Users/sailikith/Desktop/network-detective",
       "port": 8000
     },
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "/Users/sailikith/Desktop/network-detective/frontend", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/sailikith/Desktop/network-detective/frontend",
+        "run",
+        "dev"
+      ],
       "cwd": "/Users/sailikith/Desktop/network-detective/frontend",
       "port": 3000
+    },
+    {
+      "name": "backend-live-demo",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "DATABASE_URL=sqlite+aiosqlite:////private/tmp/claude-501/-Users-sailikith-Desktop-network-detective/2c167fa9-d0ad-4c46-9864-7f6b8c5fc69e/scratchpad/live_demo.db",
+        "/Users/sailikith/Desktop/network-detective/.venv/bin/uvicorn",
+        "src.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8001",
+        "--app-dir",
+        "/Users/sailikith/Desktop/network-detective"
+      ],
+      "cwd": "/Users/sailikith/Desktop/network-detective",
+      "port": 8001
+    },
+    {
+      "name": "frontend-live-demo",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "API_TARGET=http://localhost:8001",
+        "PORT=3001",
+        "npm",
+        "--prefix",
+        "/Users/sailikith/Desktop/network-detective/frontend",
+        "run",
+        "dev"
+      ],
+      "cwd": "/Users/sailikith/Desktop/network-detective/frontend",
+      "port": 3001
     }
   ]
 }

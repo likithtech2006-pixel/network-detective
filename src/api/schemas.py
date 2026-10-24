@@ -6,10 +6,10 @@ links, metrics, incidents, healing actions, simulation commands, and dashboard s
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.core.models import (
     ActionResult,
@@ -33,6 +33,14 @@ class BaseSchema(BaseModel):
         populate_by_name=True,
         arbitrary_types_allowed=True,
     )
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _assume_utc(cls, value: Any) -> Any:
+        """Times are stored in UTC without a zone (SQLite drops it); send them marked as UTC."""
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class MessageResponse(BaseSchema):

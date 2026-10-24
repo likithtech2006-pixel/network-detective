@@ -32,6 +32,15 @@ export const IncidentTimeline: React.FC<IncidentTimelineProps> = ({
     }));
   };
 
+  // Every line below comes from the incident record; nothing is scripted
+  const action = incident.healing_actions?.[0];
+  const isEscalated = incident.status.toLowerCase() === 'escalated';
+  const fault = incident.fault_type.replace(/_/g, ' ');
+  const flow =
+    incident.source_node && incident.target_node && incident.source_node !== incident.target_node
+      ? `${incident.source_node} → ${incident.target_node}`
+      : null;
+
   const steps = [
     {
       key: 'detected',
@@ -39,9 +48,7 @@ export const IncidentTimeline: React.FC<IncidentTimelineProps> = ({
       status: 'detected',
       icon: <AlertTriangle className="w-4 h-4 text-amber-400" />,
       time: incident.detected_at,
-      desc: `Anomaly triggered: ${incident.fault_type.replace('_', ' ')} detected on ${
-        incident.affected_component
-      }. Network telemetry flagged latency and loss thresholds.`,
+      desc: `Health monitor confirmed ${fault} on ${incident.affected_component} after consecutive failed probes.`,
       active: true,
       color: 'border-amber-500 bg-amber-950/20 text-amber-300',
     },
@@ -50,49 +57,43 @@ export const IncidentTimeline: React.FC<IncidentTimelineProps> = ({
       title: 'Root Cause Diagnosis',
       status: 'diagnosing',
       icon: <Search className="w-4 h-4 text-blue-400" />,
-      time: incident.detected_at
-        ? new Date(new Date(incident.detected_at).getTime() + 1500).toISOString()
-        : '',
-      desc: `Automated detective analysis performed topology graph traversal. Isolated failed component [${
-        incident.affected_component
-      }]. Computed alternate path bypass.`,
+      time: incident.detected_at,
+      desc: `Diagnoser isolated ${incident.affected_component} as the root cause${
+        flow ? `; primary affected flow ${flow}` : ''
+      }.`,
       active: incident.status !== 'detected',
       color: 'border-blue-500 bg-blue-950/20 text-blue-300',
     },
     {
       key: 'healing',
-      title: 'Self-Healing Execution',
+      title: action?.action_type === 'escalate' ? 'No Reroute Possible' : 'Self-Healing Execution',
       status: 'healing',
       icon: <Wrench className="w-4 h-4 text-purple-400" />,
-      time: incident.healing_actions?.[0]?.executed_at || incident.detected_at,
-      desc: incident.alternate_path?.length
-        ? `Dynamic Dijkstra rerouting applied. Bypassed faulty segment via alternate route: [${incident.alternate_path.join(
-            ' → '
-          )}]`
-        : 'Automated healing policy executed reroute operation.',
+      time: action?.executed_at || '',
+      desc:
+        action?.action_type === 'reroute' && incident.alternate_path?.length
+          ? `Moved ${flow ?? 'traffic'} from [${(incident.original_path ?? []).join(' → ')}] to [${incident.alternate_path.join(' → ')}].`
+          : action
+          ? 'No path avoided the failed components, so nothing was rerouted.'
+          : 'Waiting for the healer.',
       active: ['healing', 'verified', 'escalated'].includes(incident.status.toLowerCase()),
       color: 'border-purple-500 bg-purple-950/20 text-purple-300',
     },
     {
       key: 'verified',
-      title: incident.status === 'escalated' ? 'Escalated to Ops' : 'Verified & Healed',
+      title: isEscalated ? 'Escalated to an Engineer' : 'Verified & Healed',
       status: incident.status,
-      icon:
-        incident.status === 'escalated' ? (
-          <XCircle className="w-4 h-4 text-red-400" />
-        ) : (
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-        ),
-      time: incident.resolved_at || 'Pending verification',
-      desc:
-        incident.status === 'escalated'
-          ? 'Automatic healing retry limit reached or high severity failure. Escalated to Network NOC team for physical inspection.'
-          : 'Synthetic probe packets confirmed latency stabilized under 20ms and 0% packet loss. Incident resolved.',
+      icon: isEscalated ? (
+        <XCircle className="w-4 h-4 text-red-400" />
+      ) : (
+        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+      ),
+      time: incident.resolved_at || '',
+      desc: incident.resolution_notes || 'Verification in progress.',
       active: ['verified', 'escalated'].includes(incident.status.toLowerCase()),
-      color:
-        incident.status === 'escalated'
-          ? 'border-red-500 bg-red-950/20 text-red-300'
-          : 'border-emerald-500 bg-emerald-950/20 text-emerald-300',
+      color: isEscalated
+        ? 'border-red-500 bg-red-950/20 text-red-300'
+        : 'border-emerald-500 bg-emerald-950/20 text-emerald-300',
     },
   ];
 

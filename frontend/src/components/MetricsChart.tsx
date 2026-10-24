@@ -133,7 +133,7 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
 
       <div style={{ width: '100%', height }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+          <LineChart data={chartData} margin={{ top: 10, right: 10, left: 4, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} vertical={false} />
             <XAxis
               dataKey="time"

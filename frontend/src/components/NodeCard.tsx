@@ -4,6 +4,8 @@ import { getNodeMetrics } from '../services/api';
 import StatusBadge from './StatusBadge';
 import {
   Server,
+  Router,
+  Network,
   Activity,
   Radio,
   Clock,
@@ -98,13 +100,19 @@ export const NodeCard: React.FC<NodeCardProps> = ({
 
   return (
     <div
-      className={`bg-gray-900/95 border border-gray-800 rounded-2xl p-5 shadow-2xl backdrop-blur-xl flex flex-col gap-4 text-gray-200 transition-all ${className}`}
+      className={`bg-gray-900 border border-gray-800 rounded-2xl p-5 shadow-2xl flex flex-col gap-4 text-gray-200 transition-all ${className}`}
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-gray-800/80 border border-gray-700/60 text-indigo-400">
-            <Server className="w-6 h-6" />
+            {node.node_type === 'server' ? (
+              <Server className="w-6 h-6 text-emerald-400" />
+            ) : node.node_type === 'switch' ? (
+              <Network className="w-6 h-6 text-violet-400" />
+            ) : (
+              <Router className="w-6 h-6" />
+            )}
           </div>
           <div>
             <h3 className="font-bold text-base text-white tracking-wide">{node.name}</h3>
