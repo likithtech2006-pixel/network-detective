@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getIncidents } from '../services/api';
+import { getIncidents, errorMessage } from '../services/api';
 import { Incident } from '../types';
 import IncidentTimeline from '../components/IncidentTimeline';
 import StatusBadge from '../components/StatusBadge';
@@ -16,59 +16,9 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-const DEFAULT_INCIDENTS: Incident[] = [
-  {
-    id: 'inc-9821a',
-    fault_type: 'node_down',
-    affected_component: 'node-edge-2',
-    status: 'verified',
-    source_node: 'node-core-1',
-    target_node: 'node-gw-2',
-    original_path: ['node-core-1', 'node-edge-2', 'node-gw-2'],
-    alternate_path: ['node-core-1', 'node-core-2', 'node-edge-3', 'node-gw-2'],
-    detected_at: new Date(Date.now() - 1000 * 60 * 18).toISOString(),
-    resolved_at: new Date(Date.now() - 1000 * 60 * 17.5).toISOString(),
-    healing_actions: [
-      {
-        id: 'act-01',
-        incident_id: 'inc-9821a',
-        action_type: 'reroute',
-        old_route: ['node-core-1', 'node-edge-2', 'node-gw-2'],
-        new_route: ['node-core-1', 'node-core-2', 'node-edge-3', 'node-gw-2'],
-        result: 'success',
-        executed_at: new Date(Date.now() - 1000 * 60 * 17.8).toISOString(),
-        details: 'Dijkstra shortest available path computed in 14ms. Flushed BGP next-hop tables.',
-      },
-    ],
-  },
-  {
-    id: 'inc-8412b',
-    fault_type: 'link_degraded',
-    affected_component: 'link-c1-e1',
-    status: 'verified',
-    source_node: 'node-core-1',
-    target_node: 'node-edge-1',
-    original_path: ['node-core-1', 'node-edge-1', 'node-gw-1'],
-    alternate_path: ['node-core-1', 'node-edge-2', 'node-gw-1'],
-    detected_at: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    resolved_at: new Date(Date.now() - 1000 * 60 * 44.2).toISOString(),
-    healing_actions: [
-      {
-        id: 'act-02',
-        incident_id: 'inc-8412b',
-        action_type: 'reroute',
-        old_route: ['node-core-1', 'node-edge-1', 'node-gw-1'],
-        new_route: ['node-core-1', 'node-edge-2', 'node-gw-1'],
-        result: 'success',
-        executed_at: new Date(Date.now() - 1000 * 60 * 44.6).toISOString(),
-        details: 'Link degraded due to 18% packet loss threshold violation. Shifted traffic to edge-2.',
-      },
-    ],
-  },
-];
-
 export const Incidents: React.FC = () => {
-  const [incidents, setIncidents] = useState<Incident[]>(DEFAULT_INCIDENTS);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'resolved'>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [expandedIncidentId, setExpandedIncidentId] = useState<string | null>(null);
@@ -78,11 +28,10 @@ export const Incidents: React.FC = () => {
     try {
       setIsLoading(true);
       const data = await getIncidents();
-      if (data && data.length > 0) {
-        setIncidents(data);
-      }
-    } catch {
-      // Retain default demo incidents
+      setIncidents(data ?? []);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(errorMessage(err));
     } finally {
       setIsLoading(false);
     }
@@ -217,7 +166,7 @@ export const Incidents: React.FC = () => {
               onClick={() => setFilterStatus(filter)}
               className={`flex-1 sm:flex-initial px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
                 filterStatus === filter
-                  ? 'bg-indigo-600 text-white shadow-md'
+                  ? 'bg-indigo-600 text-on-accent shadow-md'
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
@@ -257,7 +206,11 @@ export const Incidents: React.FC = () => {
               {filteredIncidents.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-10 text-center text-gray-500 font-sans">
-                    No incidents match the active search or filter.
+                    {loadError
+                      ? `Could not load incidents: ${loadError}`
+                      : incidents.length === 0
+                      ? 'No incidents yet. Break a wire or device in the Simulator to see self-healing.'
+                      : 'No incidents match the active search or filter.'}
                   </td>
                 </tr>
               ) : (

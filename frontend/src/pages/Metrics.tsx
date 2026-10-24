@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import useTopology from '../hooks/useTopology';
-import useWebSocket from '../hooks/useWebSocket';
-import { getNodeMetrics } from '../services/api';
+import { getNodeMetricsWindow } from '../services/api';
 import { Metric } from '../types';
 import MetricsChart from '../components/MetricsChart';
 import {
@@ -16,7 +15,6 @@ import {
 
 export const Metrics: React.FC = () => {
   const { topology } = useTopology();
-  const { metrics: wsMetrics } = useWebSocket();
 
   const [selectedNodeId, setSelectedNodeId] = useState<string>('');
   const [timeRange, setTimeRange] = useState<'5m' | '15m' | '1h' | '24h'>('15m');
@@ -32,73 +30,54 @@ export const Metrics: React.FC = () => {
 
   const activeNode = topology.nodes.find((n) => n.id === selectedNodeId) || topology.nodes[0];
 
-  // Fetch metrics when node or timeRange changes
+  // Stored samples for the selected window, oldest first; refreshed every 5 s
   useEffect(() => {
     if (!selectedNodeId) return;
 
     let isSubscribed = true;
+    const minutes = { '5m': 5, '15m': 15, '1h': 60, '24h': 1440 }[timeRange];
     const fetchNodeData = async () => {
       try {
         setLoading(true);
-        const count = timeRange === '5m' ? 15 : timeRange === '15m' ? 30 : timeRange === '1h' ? 60 : 120;
-        const data = await getNodeMetrics(selectedNodeId, count);
-        if (isSubscribed && data && data.length > 0) {
-          setMetricsHistory(data);
-        } else if (isSubscribed) {
-          // Generate baseline fallback telemetry if endpoint is newly initialized
-          const generated: Metric[] = [];
-          const now = Date.now();
-          const stepMs = (count * 1000) / count;
-          const isDown = activeNode?.status === 'down';
-          const isDegraded = activeNode?.status === 'degraded';
-
-          for (let i = count; i >= 0; i--) {
-            const time = new Date(now - i * stepMs).toISOString();
-            const baseLatency = isDown ? 0 : isDegraded ? 75 : 18;
-            const variance = Math.random() * 6 - 3;
-            generated.push({
-              node_id: selectedNodeId,
-              latency_ms: Math.max(0, Math.round(baseLatency + variance)),
-              packet_loss_pct: isDown ? 100 : isDegraded ? 14 : Math.random() > 0.85 ? 1 : 0,
-              jitter_ms: Math.max(0, Math.round((isDegraded ? 18 : 3) + Math.random() * 4 - 2)),
-              recorded_at: time,
-            });
-          }
-          setMetricsHistory(generated);
+        const data = await getNodeMetricsWindow(selectedNodeId, minutes);
+        if (isSubscribed) {
+          setMetricsHistory(
+            [...data].sort((a, b) => Date.parse(a.recorded_at) - Date.parse(b.recorded_at))
+          );
         }
       } catch {
-        // Fallback demo telemetry
+        if (isSubscribed) setMetricsHistory([]);
       } finally {
         if (isSubscribed) setLoading(false);
       }
     };
 
     fetchNodeData();
+    const timer = setInterval(fetchNodeData, 5000);
     return () => {
       isSubscribed = false;
+      clearInterval(timer);
     };
-  }, [selectedNodeId, timeRange, activeNode?.status]);
-
-  // Append incoming live metric from WebSocket if it matches selectedNodeId
-  useEffect(() => {
-    if (selectedNodeId && wsMetrics[selectedNodeId]) {
-      setMetricsHistory((prev) => [...prev.slice(-60), wsMetrics[selectedNodeId]]);
-    }
-  }, [selectedNodeId, wsMetrics]);
+  }, [selectedNodeId, timeRange]);
 
   // Compute summary stats
   const summary = useMemo(() => {
+    // Latency and jitter only exist for probes that got a reply
+    const replied = metricsHistory.filter((m) => m.packet_loss_pct < 100);
     if (metricsHistory.length === 0) {
-      return { curLatency: 0, peakLatency: 0, avgLoss: 0, avgJitter: 0 };
+      return { curLatency: '—', peakLatency: '—', avgLoss: '—', avgJitter: '—' };
     }
-    const latencies = metricsHistory.map((m) => m.latency_ms);
+    const latencies = replied.map((m) => m.latency_ms);
     const losses = metricsHistory.map((m) => m.packet_loss_pct);
-    const jitters = metricsHistory.map((m) => m.jitter_ms);
+    const jitters = replied.map((m) => m.jitter_ms);
+    const last = metricsHistory[metricsHistory.length - 1];
 
-    const curLatency = latencies[latencies.length - 1];
-    const peakLatency = Math.max(...latencies);
+    const curLatency = last.packet_loss_pct < 100 ? last.latency_ms.toFixed(1) : '—';
+    const peakLatency = latencies.length ? Math.max(...latencies).toFixed(1) : '—';
     const avgLoss = (losses.reduce((a, b) => a + b, 0) / losses.length).toFixed(1);
-    const avgJitter = (jitters.reduce((a, b) => a + b, 0) / jitters.length).toFixed(1);
+    const avgJitter = jitters.length
+      ? (jitters.reduce((a, b) => a + b, 0) / jitters.length).toFixed(2)
+      : '—';
 
     return { curLatency, peakLatency, avgLoss, avgJitter };
   }, [metricsHistory]);
@@ -143,7 +122,7 @@ export const Metrics: React.FC = () => {
                 onClick={() => setTimeRange(range)}
                 className={`px-3 py-1 rounded-lg transition-all ${
                   timeRange === range
-                    ? 'bg-indigo-600 text-white shadow-md'
+                    ? 'bg-indigo-600 text-on-accent shadow-md'
                     : 'text-gray-400 hover:text-white'
                 }`}
               >
@@ -165,7 +144,7 @@ export const Metrics: React.FC = () => {
             <span className="text-2xl font-black text-white">{summary.curLatency}</span>
             <span className="text-xs font-mono text-gray-400">ms</span>
           </div>
-          <div className="text-[11px] text-emerald-400 font-mono mt-1">Normal operating bounds</div>
+          <div className="text-[11px] text-gray-400 font-mono mt-1">Latest reply</div>
         </div>
 
         <div className="bg-gray-900/80 border border-gray-800 rounded-2xl p-4 shadow-lg backdrop-blur">
@@ -194,7 +173,7 @@ export const Metrics: React.FC = () => {
               {summary.avgLoss}%
             </span>
           </div>
-          <div className="text-[11px] text-gray-400 font-mono mt-1">Synthetic probe drops</div>
+          <div className="text-[11px] text-gray-400 font-mono mt-1">{metricsHistory.length} probes in {timeRange}</div>
         </div>
 
         <div className="bg-gray-900/80 border border-gray-800 rounded-2xl p-4 shadow-lg backdrop-blur">
@@ -206,7 +185,7 @@ export const Metrics: React.FC = () => {
             <span className="text-2xl font-black text-white">{summary.avgJitter}</span>
             <span className="text-xs font-mono text-gray-400">ms</span>
           </div>
-          <div className="text-[11px] text-emerald-400 font-mono mt-1">Low buffer delay</div>
+          <div className="text-[11px] text-gray-400 font-mono mt-1">Change between replies</div>
         </div>
       </div>
 
@@ -219,8 +198,8 @@ export const Metrics: React.FC = () => {
           metricType="latency"
           title="Round Trip Time (RTT Latency)"
           height={260}
-          warningThreshold={40}
-          criticalThreshold={80}
+          warningThreshold={100}
+          criticalThreshold={200}
         />
 
         {/* Packet Loss Chart */}
@@ -231,7 +210,7 @@ export const Metrics: React.FC = () => {
           title="Packet Drop Percentage"
           height={260}
           warningThreshold={5}
-          criticalThreshold={15}
+          criticalThreshold={10}
         />
 
         {/* Jitter Chart */}

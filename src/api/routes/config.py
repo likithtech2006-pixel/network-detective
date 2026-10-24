@@ -8,23 +8,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException, Request
 from loguru import logger
 
 from src.core.config import get_settings
+from src.detector.threshold_engine import ThresholdEngine
 
 router = APIRouter(prefix="/api/config", tags=["Configuration"])
 
 
-def _build_config_dict() -> dict[str, Any]:
+def _build_config_dict(request: Request) -> dict[str, Any]:
     """Construct a consolidated dictionary of active configuration settings."""
     settings = get_settings()
     th = settings.thresholds
+    state = request.app.state
 
     return {
         "app_name": settings.app_name,
         "environment": settings.environment,
-        "polling_interval_sec": settings.polling_interval_sec,
+        # How often the health monitor probes in the current network mode
+        "polling_interval_sec": state.health_monitor.interval_sec,
+        "network_mode": state.health_monitor.mode,
         "thresholds": {
             "latency_warn_ms": th.latency_warn_ms,
             "latency_critical_ms": th.latency_critical_ms,
@@ -38,32 +42,49 @@ def _build_config_dict() -> dict[str, Any]:
         "latency_critical_ms": th.latency_critical_ms,
         "packet_loss_warning_pct": th.packet_loss_warn_pct,
         "packet_loss_critical_pct": th.packet_loss_critical_pct,
-        "healing_enabled": True,
-        "auto_rollback": True,
+        "healing_enabled": state.self_healer.enabled,
+        "auto_rollback": state.incident_resolver.rollback_on_failure,
     }
 
 
 @router.get("", summary="Get system configuration")
 @router.get("/", summary="Get system configuration", include_in_schema=False)
-async def get_config() -> dict[str, Any]:
+async def get_config(request: Request) -> dict[str, Any]:
     """Retrieve active system operational parameters and fault detection thresholds."""
-    return _build_config_dict()
+    return _build_config_dict(request)
 
 
 @router.put("", summary="Update system configuration")
 @router.put("/", summary="Update system configuration", include_in_schema=False)
 async def update_config(
+    request: Request,
     payload: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
-    """Dynamically modify runtime thresholds or polling intervals without restart."""
+    """Change thresholds, the probe interval and the healing switches without a restart."""
     settings = get_settings()
+    state = request.app.state
+    monitor = state.health_monitor
 
-    # 1. Update Polling Interval
-    if "polling_interval_sec" in payload and payload["polling_interval_sec"] is not None:
-        new_interval = int(payload["polling_interval_sec"])
-        if 1 <= new_interval <= 3600:
-            settings.polling_interval_sec = new_interval
-            logger.info("Updated polling_interval_sec to {}", new_interval)
+    # 1. Probe interval for the current network mode
+    if payload.get("polling_interval_sec") is not None:
+        new_interval = float(payload["polling_interval_sec"])
+        if not 0.2 <= new_interval <= 60:
+            raise HTTPException(status_code=400, detail="Probe interval must be 0.2 to 60 seconds")
+        monitor.interval_sec = new_interval
+        if monitor.mode == "live":
+            monitor.live_interval_sec = new_interval
+        else:
+            monitor.sim_interval_sec = new_interval
+        logger.info("Health monitor now probes every {}s", new_interval)
+
+    if payload.get("healing_enabled") is not None:
+        state.self_healer.enabled = bool(payload["healing_enabled"])
+        logger.info("Self-healing enabled: {}", state.self_healer.enabled)
+    if payload.get("auto_rollback") is not None:
+        state.incident_resolver.rollback_on_failure = bool(payload["auto_rollback"])
+        logger.info(
+            "Rollback on failed verification: {}", state.incident_resolver.rollback_on_failure
+        )
 
     # 2. Update Thresholds from nested dictionary
     th = settings.thresholds
@@ -92,4 +113,8 @@ async def update_config(
             setattr(th, model_attr, int(val) if model_attr == "max_retries" else float(val))
             logger.info("Updated threshold {} -> {}", model_attr, val)
 
-    return _build_config_dict()
+    # The running monitor copied the thresholds at startup; give it the new ones
+    monitor.threshold_engine = ThresholdEngine()
+    monitor.confirmations = max(1, int(th.max_retries))
+
+    return _build_config_dict(request)

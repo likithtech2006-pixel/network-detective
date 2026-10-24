@@ -111,6 +111,8 @@ class HealthMonitor:
         # When each component first looked bad in its current streak (for detection time)
         self._first_bad_at: dict[str, float] = {}
         self._last_metrics_at = 0.0
+        # Previous answered latency per device, for jitter (RFC 3550 style difference)
+        self._last_latency: dict[str, float] = {}
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[None]] = set()
@@ -273,14 +275,22 @@ class HealthMonitor:
     async def _publish_metrics(self, samples: list[dict[str, Any]]) -> None:
         """Store and broadcast one round of node telemetry."""
         for sample in samples:
+            node_id = sample["node_id"]
             latency = sample["latency_ms"] if sample["reachable"] else 999.0
+            jitter = 0.0
+            if sample["reachable"]:
+                previous = self._last_latency.get(node_id)
+                jitter = round(abs(latency - previous), 3) if previous is not None else 0.0
+                self._last_latency[node_id] = latency
             await self.metrics_collector.record_metric(
-                node_id=sample["node_id"],
+                node_id=node_id,
                 latency_ms=latency,
                 packet_loss_pct=sample["packet_loss_pct"],
-                jitter_ms=0.0,
+                jitter_ms=jitter,
             )
-            await self.event_bus.publish(METRIC_RECORDED, {**sample, "latency_ms": latency})
+            await self.event_bus.publish(
+                METRIC_RECORDED, {**sample, "latency_ms": latency, "jitter_ms": jitter}
+            )
 
     async def _raise_faults(self, graph: nx.Graph, confirmed: dict[str, Fault], now: float) -> None:
         """Diagnose newly confirmed faults, mark them down and raise one incident per root cause."""

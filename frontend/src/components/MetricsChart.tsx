@@ -10,6 +10,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { Metric } from '../types';
+import useTheme, { themeColor } from '../hooks/useTheme';
 
 export type MetricType = 'latency' | 'packet_loss' | 'jitter';
 
@@ -32,13 +33,30 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
   warningThreshold,
   criticalThreshold,
 }) => {
+  // Recharts writes SVG attributes, so theme colors are resolved here and redrawn on change
+  const { theme } = useTheme();
+  const colors = React.useMemo(
+    () => ({
+      blue: themeColor('blue-500'),
+      red: themeColor('red-500'),
+      violet: themeColor('violet-500'),
+      amber: themeColor('amber-500'),
+      grid: themeColor('gray-800'),
+      axis: themeColor('gray-700'),
+      tick: themeColor('gray-500'),
+      card: themeColor('gray-900'),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [theme]
+  );
+
   // Metric configurations
   const config = {
     latency: {
       key: 'latency_ms',
       name: 'Latency',
       unit: 'ms',
-      color: '#3b82f6', // blue
+      color: colors.blue,
       warn: warningThreshold ?? 40,
       crit: criticalThreshold ?? 80,
     },
@@ -46,7 +64,7 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
       key: 'packet_loss_pct',
       name: 'Packet Loss',
       unit: '%',
-      color: '#ef4444', // red
+      color: colors.red,
       warn: warningThreshold ?? 5,
       crit: criticalThreshold ?? 15,
     },
@@ -54,7 +72,7 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
       key: 'jitter_ms',
       name: 'Jitter',
       unit: 'ms',
-      color: '#8b5cf6', // purple
+      color: colors.violet,
       warn: warningThreshold ?? 10,
       crit: criticalThreshold ?? 25,
     },
@@ -65,7 +83,11 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
     time: m.recorded_at
       ? new Date(m.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : `T-${data.length - idx}`,
-    value: Number(m[config.key as keyof Metric] || 0),
+    // An unanswered probe has no latency or jitter: leave a gap instead of a spike
+    value:
+      metricType !== 'packet_loss' && m.packet_loss_pct >= 100
+        ? null
+        : Number(m[config.key as keyof Metric] || 0),
     timestamp: m.recorded_at,
   }));
 
@@ -112,32 +134,32 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
       <div style={{ width: '100%', height }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} vertical={false} />
             <XAxis
               dataKey="time"
-              stroke="#6b7280"
+              stroke={colors.tick}
               fontSize={10}
               tickLine={false}
-              axisLine={{ stroke: '#374151' }}
+              axisLine={{ stroke: colors.axis }}
             />
             <YAxis
-              stroke="#6b7280"
+              stroke={colors.tick}
               fontSize={10}
               tickLine={false}
-              axisLine={{ stroke: '#374151' }}
+              axisLine={{ stroke: colors.axis }}
               unit={config.unit}
             />
             <Tooltip content={<CustomTooltip />} />
             {/* Warning and Critical dashed reference lines */}
             <ReferenceLine
               y={config.warn}
-              stroke="#f59e0b"
+              stroke={colors.amber}
               strokeDasharray="4 4"
               strokeWidth={1.5}
             />
             <ReferenceLine
               y={config.crit}
-              stroke="#ef4444"
+              stroke={colors.red}
               strokeDasharray="4 4"
               strokeWidth={1.5}
             />
@@ -147,7 +169,7 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({
               stroke={config.color}
               strokeWidth={2.5}
               dot={{ r: 2, fill: config.color }}
-              activeDot={{ r: 5, stroke: '#fff', strokeWidth: 1.5 }}
+              activeDot={{ r: 5, stroke: colors.card, strokeWidth: 1.5 }}
               isAnimationActive={true}
             />
           </LineChart>

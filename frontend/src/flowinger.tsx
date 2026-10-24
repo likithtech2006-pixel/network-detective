@@ -51,6 +51,11 @@ export interface FlowingerProps {
   nodes: FlowingerNode[];
   edges: FlowingerEdge[];
   onNodeClick?: (event: React.MouseEvent, node: FlowingerNode) => void;
+  /** Called once when a drag ends, with the node's new top-left position */
+  onNodeDragStop?: (nodeId: string, position: { x: number; y: number }) => void;
+  onEdgeClick?: (edge: FlowingerEdge) => void;
+  /** Click on empty canvas, with the point in canvas coordinates */
+  onPaneClick?: (position: { x: number; y: number }) => void;
   nodeTypes?: Record<string, React.ComponentType<{ id: string; data: any; selected?: boolean }>>;
   children?: React.ReactNode;
   className?: string;
@@ -61,6 +66,9 @@ export const Flowinger: React.FC<FlowingerProps> = ({
   nodes,
   edges,
   onNodeClick,
+  onNodeDragStop,
+  onEdgeClick,
+  onPaneClick,
   nodeTypes,
   children,
   className = '',
@@ -82,10 +90,13 @@ export const Flowinger: React.FC<FlowingerProps> = ({
     startY: number;
     origX: number;
     origY: number;
+    lastX: number;
+    lastY: number;
     hasMoved: boolean;
   } | null>(null);
 
   const isPanningRef = useRef<boolean>(false);
+  const panMovedRef = useRef<boolean>(false);
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Node position lookup map (exact and normalized case-insensitive)
@@ -145,12 +156,15 @@ export const Flowinger: React.FC<FlowingerProps> = ({
   // Canvas background mousedown (pan)
   const handleMouseDown = (e: React.MouseEvent) => {
     if (
-      (e.target as HTMLElement).closest('.flowinger-node') ||
-      (e.target as HTMLElement).closest('.flowinger-controls')
+      (e.target as Element).closest('.flowinger-node') ||
+      (e.target as Element).closest('.flowinger-controls') ||
+      (e.target as Element).closest('.flowinger-edge-hit') ||
+      (e.target as Element).closest('.flowinger-overlay')
     ) {
       return;
     }
     isPanningRef.current = true;
+    panMovedRef.current = false;
     panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
     setIsDragging(true);
   };
@@ -166,6 +180,8 @@ export const Flowinger: React.FC<FlowingerProps> = ({
       startY: e.clientY,
       origX: currentPos.x,
       origY: currentPos.y,
+      lastX: currentPos.x,
+      lastY: currentPos.y,
       hasMoved: false,
     };
     setActiveDragNodeId(node.id);
@@ -185,6 +201,8 @@ export const Flowinger: React.FC<FlowingerProps> = ({
         }
         const newX = Math.round(dragNodeRef.current.origX + dx);
         const newY = Math.round(dragNodeRef.current.origY + dy);
+        dragNodeRef.current.lastX = newX;
+        dragNodeRef.current.lastY = newY;
         setDraggedPositions((prev) => ({
           ...prev,
           [dragNodeRef.current!.nodeId]: { x: newX, y: newY },
@@ -194,6 +212,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
 
       // 2. Panning canvas
       if (isPanningRef.current) {
+        panMovedRef.current = true;
         setPan({
           x: e.clientX - panStartRef.current.x,
           y: e.clientY - panStartRef.current.y,
@@ -203,7 +222,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
 
     const onWindowMouseUp = (e: MouseEvent) => {
       if (dragNodeRef.current) {
-        const { nodeId, hasMoved } = dragNodeRef.current;
+        const { nodeId, hasMoved, lastX, lastY } = dragNodeRef.current;
         dragNodeRef.current = null;
         setActiveDragNodeId(null);
         if (!hasMoved) {
@@ -211,7 +230,17 @@ export const Flowinger: React.FC<FlowingerProps> = ({
           setSelectedNodeId(nodeId);
           const node = nodeMap.get(nodeId);
           if (node) onNodeClick?.(e as unknown as React.MouseEvent, node);
+        } else {
+          onNodeDragStop?.(nodeId, { x: lastX, y: lastY });
         }
+      } else if (isPanningRef.current && !panMovedRef.current && containerRef.current) {
+        // A click on empty canvas, not a pan
+        setSelectedNodeId(null);
+        const rect = containerRef.current.getBoundingClientRect();
+        onPaneClick?.({
+          x: Math.round((e.clientX - rect.left - pan.x) / zoom),
+          y: Math.round((e.clientY - rect.top - pan.y) / zoom),
+        });
       }
       isPanningRef.current = false;
       setIsDragging(false);
@@ -223,7 +252,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
       window.removeEventListener('mousemove', onWindowMouseMove);
       window.removeEventListener('mouseup', onWindowMouseUp);
     };
-  }, [activeDragNodeId, isDragging, zoom, nodeMap, onNodeClick]);
+  }, [activeDragNodeId, isDragging, zoom, pan, nodeMap, onNodeClick, onNodeDragStop, onPaneClick]);
 
   // Smooth, reduced sensitivity zoom (clamped delta + damped exponential response)
   const handleWheel = (e: React.WheelEvent) => {
@@ -277,12 +306,12 @@ export const Flowinger: React.FC<FlowingerProps> = ({
       const strokeColor =
         (edge.style?.stroke as string) ||
         (isDown
-          ? '#ef4444'
+          ? 'rgb(var(--c-red-500))'
           : isAlternate
-          ? '#38bdf8'
+          ? 'rgb(var(--c-sky-400))'
           : isDegraded
-          ? '#f59e0b'
-          : '#10b981');
+          ? 'rgb(var(--c-amber-500))'
+          : 'rgb(var(--c-emerald-500))');
 
       const isAnimated = !!((edge.animated || edge.data?.animated) && !isDown);
 
@@ -291,20 +320,20 @@ export const Flowinger: React.FC<FlowingerProps> = ({
       const badgeHalf = badgeWidth / 2;
 
       const badgeFill = isDown
-        ? '#220808'
+        ? 'rgb(var(--c-red-950))'
         : isAlternate
-        ? '#042230'
+        ? 'rgb(var(--c-sky-950))'
         : isDegraded
-        ? '#241403'
-        : '#061a12';
+        ? 'rgb(var(--c-amber-950))'
+        : 'rgb(var(--c-emerald-950))';
 
       const labelTextColor = isDown
-        ? '#fca5a5'
+        ? 'rgb(var(--c-red-300))'
         : isAlternate
-        ? '#7dd3fc'
+        ? 'rgb(var(--c-sky-300))'
         : isDegraded
-        ? '#fcd34d'
-        : '#6ee7b7';
+        ? 'rgb(var(--c-amber-300))'
+        : 'rgb(var(--c-emerald-300))';
 
       list.push({
         edge,
@@ -354,7 +383,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
           <svg className="absolute inset-0 w-[5000px] h-[5000px] pointer-events-none overflow-visible">
             <defs>
               <filter id="badge-shadow" x="-30%" y="-30%" width="160%" height="160%">
-                <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#000000" floodOpacity="0.8" />
+                <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#000000" style={{ floodOpacity: 'var(--shadow-strength)' }} />
               </filter>
               <marker
                 id="arrowhead-up"
@@ -364,7 +393,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                 refY="4"
                 orient="auto"
               >
-                <polygon points="0 1, 8 4, 0 7" fill="#10b981" />
+                <polygon points="0 1, 8 4, 0 7" style={{ fill: 'rgb(var(--c-emerald-500))' }} />
               </marker>
               <marker
                 id="arrowhead-down"
@@ -374,7 +403,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                 refY="4"
                 orient="auto"
               >
-                <polygon points="0 1, 8 4, 0 7" fill="#ef4444" />
+                <polygon points="0 1, 8 4, 0 7" style={{ fill: 'rgb(var(--c-red-500))' }} />
               </marker>
               <marker
                 id="arrowhead-degraded"
@@ -384,7 +413,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                 refY="4"
                 orient="auto"
               >
-                <polygon points="0 1, 8 4, 0 7" fill="#f59e0b" />
+                <polygon points="0 1, 8 4, 0 7" style={{ fill: 'rgb(var(--c-amber-500))' }} />
               </marker>
               <marker
                 id="arrowhead-alternate"
@@ -394,7 +423,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                 refY="4"
                 orient="auto"
               >
-                <polygon points="0 1, 8 4, 0 7" fill="#38bdf8" />
+                <polygon points="0 1, 8 4, 0 7" style={{ fill: 'rgb(var(--c-sky-400))' }} />
               </marker>
             </defs>
 
@@ -405,17 +434,31 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                 const { edge, pathData, strokeColor, isAlternate, isDown, isAnimated } = item;
                 return (
                   <g key={`path-${edge.id}`}>
+                    {onEdgeClick && (
+                      <path
+                        d={pathData}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth={18}
+                        className="flowinger-edge-hit cursor-pointer"
+                        style={{ pointerEvents: 'stroke' }}
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          onEdgeClick(edge);
+                        }}
+                      />
+                    )}
                     <path
                       d={pathData}
                       fill="none"
-                      stroke="#020617"
+                      style={{ stroke: 'rgb(var(--c-gray-950))' }}
                       strokeWidth={isAlternate ? 8 : isDown ? 6 : 5}
                       opacity="0.9"
                     />
                     <path
                       d={pathData}
                       fill="none"
-                      stroke={strokeColor}
+                      style={{ stroke: strokeColor }}
                       strokeWidth={isAlternate ? 4 : isDown ? 3 : 2.5}
                       strokeDasharray={isDown ? '8 6' : isAnimated ? '6 4' : undefined}
                       className={isAnimated ? 'animate-[dash_1s_linear_infinite]' : ''}
@@ -455,8 +498,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                       width={badgeWidth}
                       height="22"
                       rx="6"
-                      fill={badgeFill}
-                      stroke={strokeColor}
+                      style={{ fill: badgeFill, stroke: strokeColor }}
                       strokeWidth={isDown || isAlternate ? '2' : '1.5'}
                       strokeOpacity="0.95"
                       filter="url(#badge-shadow)"
@@ -466,7 +508,7 @@ export const Flowinger: React.FC<FlowingerProps> = ({
                       y="0"
                       dominantBaseline="central"
                       textAnchor="middle"
-                      fill={labelTextColor}
+                      style={{ fill: labelTextColor }}
                       fontSize="11"
                       fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
                       fontWeight="700"
@@ -540,7 +582,7 @@ export const Background: React.FC<{
   color?: string;
   gap?: number;
   size?: number;
-}> = ({ color = '#334155', gap = 24, size = 1 }) => {
+}> = ({ color = 'rgb(var(--c-gray-600))', gap = 24, size = 1 }) => {
   return (
     <div
       className="absolute inset-0 pointer-events-none opacity-20"

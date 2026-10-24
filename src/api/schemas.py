@@ -338,8 +338,12 @@ class DashboardStats(BaseSchema):
     links_up: int = Field(default=0, description="Count of links in UP status")
     active_incidents: int = Field(default=0, description="Number of currently active/open incidents")
     resolved_incidents: int = Field(default=0, description="Number of resolved incidents")
-    avg_latency_ms: float = Field(default=0.0, description="Mean latency across recent probes in ms")
-    avg_packet_loss_pct: float = Field(default=0.0, description="Mean packet loss percentage across recent probes")
+    avg_latency_ms: float | None = Field(
+        default=None, description="Mean latency of answered probes among the last 100, in ms"
+    )
+    avg_packet_loss_pct: float | None = Field(
+        default=None, description="Mean packet loss across the last 100 probes"
+    )
     uptime_pct: float = Field(default=100.0, description="Overall network availability percentage")
 
 

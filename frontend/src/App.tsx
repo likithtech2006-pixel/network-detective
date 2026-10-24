@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import TopologyView from './pages/TopologyView';
@@ -8,7 +8,9 @@ import Incidents from './pages/Incidents';
 import Simulator from './pages/Simulator';
 import Settings from './pages/Settings';
 import useWebSocket from './hooks/useWebSocket';
-import { ShieldCheck, Zap } from 'lucide-react';
+import ModeSwitch from './components/ModeSwitch';
+import ThemeToggle from './components/ThemeToggle';
+import { Zap } from 'lucide-react';
 
 export const App: React.FC = () => {
   const { isConnected, alerts } = useWebSocket();
@@ -37,6 +39,7 @@ export const App: React.FC = () => {
 
           {/* System Health Status Indicator */}
           <div className="flex items-center gap-3">
+            <ModeSwitch />
             <div
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold backdrop-blur shadow-sm ${
                 hasCriticalAlerts
@@ -75,13 +78,14 @@ export const App: React.FC = () => {
               </span>
             </div>
 
-            <a
-              href="/simulator"
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all"
+            <Link
+              to="/simulator"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-on-accent text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all"
             >
               <Zap className="w-3.5 h-3.5" />
               <span>Chaos Test</span>
-            </a>
+            </Link>
+            <ThemeToggle />
           </div>
         </header>
 

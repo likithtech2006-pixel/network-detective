@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import useTopology from '../hooks/useTopology';
-import useWebSocket from '../hooks/useWebSocket';
+import useNetworkMode from '../hooks/useNetworkMode';
 import SimulatorControls from '../components/SimulatorControls';
 import TopologyGraph from '../components/TopologyGraph';
 import {
+  errorMessage,
   getIncidents,
   simulateFailure,
   simulateRecover,
   resetSimulation,
 } from '../services/api';
-import { FaultType, Incident, Topology, Node, Link } from '../types';
+import { FaultType, Incident } from '../types';
 import {
   Zap,
   Terminal,
@@ -21,6 +22,20 @@ import {
   RotateCcw,
 } from 'lucide-react';
 
+const PRESETS: {
+  label: string;
+  title: string;
+  type: 'node' | 'link';
+  target: string;
+  fault: FaultType;
+  color: string;
+}[] = [
+  { label: 'Fiber Cut', title: 'Cut the B–C distribution link', type: 'link', target: 'link-b-c', fault: FaultType.LINK_DOWN, color: 'text-amber-400' },
+  { label: 'Core-B Fail', title: 'Crash core router B (transit traffic must detour)', type: 'node', target: 'router-b', fault: FaultType.NODE_DOWN, color: 'text-sky-400' },
+  { label: 'Switch-C Crash', title: 'Crash switch C (server E is cut off, so this escalates)', type: 'node', target: 'switch-c', fault: FaultType.NODE_DOWN, color: 'text-red-400' },
+  { label: 'Core-A Fail', title: 'Crash core router A', type: 'node', target: 'router-a', fault: FaultType.NODE_DOWN, color: 'text-indigo-400' },
+];
+
 interface SimulationEvent {
   id: string;
   timestamp: string;
@@ -30,32 +45,22 @@ interface SimulationEvent {
 
 export const Simulator: React.FC = () => {
   const { topology, refetch } = useTopology();
-  const { alerts } = useWebSocket();
-
-  // Local optimistic topology for instantaneous simulation responsiveness
-  const [simTopology, setSimTopology] = useState<Topology>(topology);
+  const { mode } = useNetworkMode();
   const [events, setEvents] = useState<SimulationEvent[]>([
     {
       id: 'e-init',
       timestamp: new Date().toLocaleTimeString(),
       level: 'info',
-      message: 'Self-Healing Chaos Engine initialized. Network in healthy steady state.',
+      message: 'Ready. Break a device or wire below; the log follows the real incident as the backend handles it.',
     },
   ]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [activeSimulationIncident, setActiveSimulationIncident] = useState<Incident | null>(null);
 
-  // Keep simTopology synchronized with live topology
-  React.useEffect(() => {
-    if (topology?.nodes && topology.nodes.length > 0) {
-      setSimTopology(topology);
-    }
-  }, [topology]);
-
   const addEvent = (message: string, level: SimulationEvent['level'] = 'info') => {
     setEvents((prev) => [
       {
-        id: `ev-${Date.now()}-${Math.random()}`,
+        id: `ev-${Date.now()}-${prev.length}`,
         timestamp: new Date().toLocaleTimeString(),
         level,
         message,
@@ -65,57 +70,42 @@ export const Simulator: React.FC = () => {
   };
 
   /**
-   * Computes an alternate bypass route avoiding the failed node or link
+   * Follow the first incident raised after an injection through detection, healing
+   * and verification, logging each stage once with the backend's own details.
    */
-  const computeDetourRoute = (
-    nodes: Node[],
-    links: Link[],
-    failedId: string,
-    isNode: boolean
-  ): string[] => {
-    // Known campus network detour shortcuts
-    if (failedId === 'router-b' || failedId === 'link-a-b') {
-      return ['router-a', 'server-d'];
-    }
-    if (failedId === 'switch-c' || failedId === 'link-b-c') {
-      return ['router-a', 'router-b', 'server-d'];
-    }
-    if (failedId === 'server-d' || failedId === 'link-b-d') {
-      return ['router-a', 'router-b', 'switch-c', 'server-e'];
-    }
+  const followIncident = async (known: Set<string>) => {
+    const deadline = Date.now() + 20000;
+    const logged = new Set<string>();
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const incident = (await getIncidents()).find((inc) => !known.has(inc.id));
+      if (!incident) continue;
+      setActiveSimulationIncident(incident);
 
-    // Dynamic BFS fallback for any topology
-    const adj = new Map<string, string[]>();
-    nodes.forEach((n) => adj.set(n.id, []));
-    links.forEach((l) => {
-      const srcId = l.source_node_id || l.source || '';
-      const tgtId = l.target_node_id || l.target || '';
-      if (l.id === failedId || l.status === 'down') return;
-      if (isNode && (srcId === failedId || tgtId === failedId)) return;
-      adj.get(srcId)?.push(tgtId);
-      adj.get(tgtId)?.push(srcId);
-    });
-
-    const src = failedId === (nodes[0]?.id) ? (nodes[1]?.id || 'router-b') : (nodes[0]?.id || 'router-a');
-    const dst = failedId === (nodes[nodes.length - 1]?.id)
-      ? (nodes[nodes.length - 2]?.id || 'server-d')
-      : (nodes[nodes.length - 1]?.id || 'server-e');
-
-    const queue: string[][] = [[src]];
-    const visited = new Set<string>([src]);
-    while (queue.length > 0) {
-      const path = queue.shift()!;
-      const last = path[path.length - 1];
-      if (last === dst) return path;
-      for (const neighbor of adj.get(last) || []) {
-        if (!visited.has(neighbor)) {
-          visited.add(neighbor);
-          queue.push([...path, neighbor]);
-        }
+      if (!logged.has('detected')) {
+        logged.add('detected');
+        addEvent(
+          `[DETECTED] ${incident.fault_type} on ${incident.affected_component}. ${incident.resolution_notes ?? ''}`.trim(),
+          'warn'
+        );
+      }
+      if (incident.alternate_path?.length && !logged.has('healing')) {
+        logged.add('healing');
+        addEvent(
+          `[REROUTED] ${incident.source_node} ➔ ${incident.target_node} now uses ${incident.alternate_path.join(' ➔ ')}.`,
+          'success'
+        );
+      }
+      if (incident.status === 'verified') {
+        addEvent(`[VERIFIED] ${incident.resolution_notes ?? 'Alternate path verified.'}`, 'success');
+        return;
+      }
+      if (incident.status === 'escalated') {
+        addEvent(`[ESCALATED] ${incident.resolution_notes ?? 'No alternate path available.'}`, 'error');
+        return;
       }
     }
-
-    return ['node-core-1', 'node-core-2', 'node-edge-3', 'node-gw-2'];
+    addEvent('[TIMEOUT] No incident finished within 20 s. Check that the backend is running.', 'warn');
   };
 
   const handleInjectFailure = async (
@@ -124,167 +114,54 @@ export const Simulator: React.FC = () => {
     faultType: FaultType | string
   ) => {
     setIsLoading(true);
-
-    // 1. Immediately update simTopology so graph reacts in <1ms
-    setSimTopology((prev) => {
-      if (targetType === 'node') {
-        return {
-          ...prev,
-          nodes: prev.nodes.map((n) =>
-            n.id === targetId ? { ...n, status: 'down' } : n
-          ),
-          links: prev.links.map((l) =>
-            l.source_node_id === targetId || l.target_node_id === targetId
-              ? { ...l, status: 'down' }
-              : l
-          ),
-        };
-      } else {
-        return {
-          ...prev,
-          links: prev.links.map((l) =>
-            l.id === targetId ? { ...l, status: 'down' } : l
-          ),
-        };
-      }
-    });
-
-    const alternateRoute = computeDetourRoute(
-      simTopology.nodes,
-      simTopology.links,
-      targetId,
-      targetType === 'node'
-    );
-
-    // Initial incident state: fault active
-    setActiveSimulationIncident({
-      id: `sim-${Date.now()}`,
-      fault_type: faultType,
-      affected_component: targetId,
-      status: 'healing',
-      alternate_path: [],
-      detected_at: new Date().toISOString(),
-      healing_actions: [],
-    });
-
-    addEvent(
-      `[CHAOS INJECTION] Injected fault ${faultType} on ${targetType} [${targetId}]. Component marked OFFLINE.`,
-      'error'
-    );
-
-    // Phase 2: Telemetry anomaly detection (400ms)
-    setTimeout(() => {
-      addEvent(
-        `[TELEMETRY ALERT] 100% synthetic probe loss on ${targetType} [${targetId}]. SLA threshold breached!`,
-        'warn'
-      );
-    }, 400);
-
-    // Phase 3: Detective Root Cause Analysis (900ms)
-    setTimeout(() => {
-      addEvent(
-        `[DETECTIVE RCA] Graph analysis isolated root cause to ${targetType} [${targetId}]. Calculating Dijkstra detour...`,
-        'warn'
-      );
-    }, 900);
-
-    // Phases 4-5: report the backend's real reroute and verification outcome
+    setActiveSimulationIncident(null);
     try {
-      await simulateFailure({ target_type: targetType, target_id: targetId, fault_type: faultType });
-      const [incident] = await getIncidents();
-      if (!incident) throw new Error('No incident recorded');
-
-      setActiveSimulationIncident(incident);
-      if (incident.status === 'verified' && incident.alternate_path?.length) {
-        addEvent(
-          `[SELF-HEALING REROUTE] Rerouted ${incident.source_node} ➔ ${incident.target_node} via ${incident.alternate_path.join(' ➔ ')}.`,
-          'success'
-        );
-        addEvent(`[VERIFICATION PASSED] ${incident.resolution_notes ?? 'Alternate path verified.'}`, 'success');
-      } else {
-        addEvent(`[ESCALATED] ${incident.resolution_notes ?? 'No alternate path available.'}`, 'error');
-      }
+      const known = new Set((await getIncidents()).map((inc) => inc.id));
+      const result = await simulateFailure({ target_type: targetType, target_id: targetId, fault_type: faultType });
+      addEvent(`[INJECTED] ${result.message}`, 'error');
+      await refetch();
+      await followIncident(known);
+      await refetch();
+    } catch (err) {
+      addEvent(`[REFUSED] ${errorMessage(err)}`, 'error');
+    } finally {
       setIsLoading(false);
-    } catch {
-      // Backend offline: animate the healing flow locally
-      // Phase 4: Self-Healing Reroute (1500ms)
-      setTimeout(() => {
-        setActiveSimulationIncident((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: 'verified',
-                alternate_path: alternateRoute,
-              }
-            : null
-        );
-        addEvent(
-          `[SELF-HEALING REROUTE] Autonomous SDN controller applied bypass route: ${alternateRoute.join(' ➔ ')}. Traffic active!`,
-          'success'
-        );
-        setIsLoading(false);
-      }, 1500);
-
-      // Phase 5: Verification (2200ms)
-      setTimeout(() => {
-        addEvent(
-          `[VERIFICATION PASSED] Latency: 1.8ms (0% loss). SLA restored to 100%. Network self-healing completed in 2.2s.`,
-          'success'
-        );
-      }, 2200);
     }
   };
 
   const handleRecover = async (targetType: 'node' | 'link', targetId: string) => {
     setIsLoading(true);
-    addEvent(`[RECOVERY] Restoring ${targetType} [${targetId}] to online status...`, 'info');
-
-    setSimTopology((prev) => {
-      if (targetType === 'node') {
-        return {
-          ...prev,
-          nodes: prev.nodes.map((n) =>
-            n.id === targetId ? { ...n, status: 'up' } : n
-          ),
-          links: prev.links.map((l) =>
-            l.source_node_id === targetId || l.target_node_id === targetId
-              ? { ...l, status: 'up' }
-              : l
-          ),
-        };
-      } else {
-        return {
-          ...prev,
-          links: prev.links.map((l) =>
-            l.id === targetId ? { ...l, status: 'up' } : l
-          ),
-        };
-      }
-    });
-
-    setActiveSimulationIncident(null);
-    addEvent(`[RESTORED] ${targetType} [${targetId}] is back online with normal link weight. Baseline routing active.`, 'success');
-    simulateRecover({ target_type: targetType, target_id: targetId }).catch(() => {});
-    setIsLoading(false);
+    try {
+      const result = await simulateRecover({ target_type: targetType, target_id: targetId });
+      addEvent(`[REPAIRED] ${result.message}`, 'info');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await refetch();
+      setActiveSimulationIncident(null);
+      addEvent('[RECOVERED] Monitor saw it answer again; routes returned to the primary paths.', 'success');
+    } catch (err) {
+      addEvent(`[REFUSED] ${errorMessage(err)}`, 'error');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleResetAll = async () => {
     setIsLoading(true);
-    addEvent('[RESET] Clearing all chaos faults and restoring baseline network...', 'warn');
-    setSimTopology((prev) => ({
-      ...prev,
-      nodes: prev.nodes.map((n) => ({ ...n, status: 'up' })),
-      links: prev.links.map((l) => ({ ...l, status: 'up' })),
-    }));
-    setActiveSimulationIncident(null);
-    addEvent('[HEALTHY] Baseline mesh network restored. All nodes and links UP.', 'success');
-    resetSimulation().catch(() => {});
-    setIsLoading(false);
+    try {
+      await resetSimulation();
+      setActiveSimulationIncident(null);
+      await refetch();
+      addEvent('[RESET] Every fault repaired, all devices healthy, open incidents closed.', 'success');
+    } catch (err) {
+      addEvent(`[REFUSED] ${errorMessage(err)}`, 'error');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Quick Preset Scenarios
   const runPresetScenario = (title: string, targetType: 'node' | 'link', targetId: string, fault: FaultType) => {
-    addEvent(`[SCENARIO] Launching preset scenario: "${title}"`, 'info');
+    addEvent(`[SCENARIO] ${title}`, 'info');
     handleInjectFailure(targetType, targetId, fault);
   };
 
@@ -302,44 +179,27 @@ export const Simulator: React.FC = () => {
           </p>
         </div>
 
-        {/* Preset Scenarios */}
+        {/* Preset Scenarios (shown only while their target exists in the topology) */}
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() =>
-              runPresetScenario('Access Switch C Down', 'node', 'switch-c', FaultType.NODE_DOWN)
-            }
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 border border-gray-800 text-xs font-semibold text-gray-300 hover:text-white hover:bg-gray-800 transition-all hover:border-red-500/40"
-          >
-            <Play className="w-3 h-3 text-red-400" />
-            <span>Switch-C Crash</span>
-          </button>
-          <button
-            onClick={() =>
-              runPresetScenario('Distribution Fiber Cut (B-C)', 'link', 'link-b-c', FaultType.LINK_DOWN)
-            }
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 border border-gray-800 text-xs font-semibold text-gray-300 hover:text-white hover:bg-gray-800 transition-all hover:border-amber-500/40"
-          >
-            <Play className="w-3 h-3 text-amber-400" />
-            <span>Fiber Cut</span>
-          </button>
-          <button
-            onClick={() =>
-              runPresetScenario('Core Router A Down', 'node', 'router-a', FaultType.NODE_DOWN)
-            }
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 border border-gray-800 text-xs font-semibold text-gray-300 hover:text-white hover:bg-gray-800 transition-all hover:border-indigo-500/40"
-          >
-            <Play className="w-3 h-3 text-indigo-400" />
-            <span>Core-A Fail</span>
-          </button>
-          <button
-            onClick={() =>
-              runPresetScenario('Core Router B Down', 'node', 'router-b', FaultType.NODE_DOWN)
-            }
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 border border-gray-800 text-xs font-semibold text-gray-300 hover:text-white hover:bg-gray-800 transition-all hover:border-sky-500/40"
-          >
-            <Play className="w-3 h-3 text-sky-400" />
-            <span>Core-B Fail</span>
-          </button>
+          {PRESETS.filter((preset) =>
+            preset.type === 'node'
+              ? topology.nodes.some((n) => n.id === preset.target)
+              : topology.links.some((l) => l.id === preset.target)
+          ).map((preset) => {
+            const blocked = preset.type === 'node' && mode === 'live';
+            return (
+              <button
+                key={preset.label}
+                disabled={blocked || isLoading}
+                title={blocked ? 'In live mode, switch the real device off instead' : preset.title}
+                onClick={() => runPresetScenario(preset.title, preset.type, preset.target, preset.fault)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 border border-gray-800 text-xs font-semibold text-gray-300 hover:text-white hover:bg-gray-800 disabled:opacity-40 disabled:hover:bg-gray-900 transition-all"
+              >
+                <Play className={`w-3 h-3 ${preset.color}`} />
+                <span>{preset.label}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -348,8 +208,8 @@ export const Simulator: React.FC = () => {
         {/* Left 2 Cols: Controls */}
         <div className="lg:col-span-2">
           <SimulatorControls
-            nodes={simTopology.nodes}
-            links={simTopology.links}
+            nodes={topology.nodes}
+            links={topology.links}
             onInjectFailure={handleInjectFailure}
             onRecover={handleRecover}
             onResetAll={handleResetAll}
@@ -379,7 +239,7 @@ export const Simulator: React.FC = () => {
                   2
                 </span>
                 <span>
-                  <strong className="text-white">Anomaly Detection:</strong> Fast probe telemetry identifies latency violation or drop spike.
+                  <strong className="text-white">Detection:</strong> The monitor probes every device and wire ({mode === 'live' ? 'real pings, every 1 s' : 'every 0.5 s'}); 3 failed probes in a row confirm a fault.
                 </span>
               </li>
               <li className="flex items-start gap-2.5">
@@ -387,7 +247,7 @@ export const Simulator: React.FC = () => {
                   3
                 </span>
                 <span>
-                  <strong className="text-white">Root Cause Detective:</strong> Traverses graph model to pinpoint failed element.
+                  <strong className="text-white">Root cause:</strong> The diagnoser walks the topology graph so a crashed device is reported once, not once per wire.
                 </span>
               </li>
               <li className="flex items-start gap-2.5">
@@ -395,7 +255,7 @@ export const Simulator: React.FC = () => {
                   4
                 </span>
                 <span>
-                  <strong className="text-white">Dynamic Reroute:</strong> Dijkstra calculates alternate healthy path and updates routes.
+                  <strong className="text-white">Reroute:</strong> A pre-computed backup path is used if it avoids every failure; otherwise Dijkstra finds one.
                 </span>
               </li>
               <li className="flex items-start gap-2.5">
@@ -403,7 +263,7 @@ export const Simulator: React.FC = () => {
                   5
                 </span>
                 <span>
-                  <strong className="text-white">Verification:</strong> Synthetic probes verify SLA recovery within &lt; 2 seconds.
+                  <strong className="text-white">Verification:</strong> After 2 s for routes to settle, every hop of the detour is probed (≤ 300 ms, ≤ 15% loss) or the change is rolled back.
                 </span>
               </li>
             </ol>
@@ -421,15 +281,15 @@ export const Simulator: React.FC = () => {
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-cyan-400" />
-            <span>Simulated Network Reaction & Healing Visualization</span>
+            <span>Network Reaction & Healing</span>
           </h3>
           <span className="text-xs text-gray-400 font-mono">
-            Alternate route highlighted in blue upon failure
+            Detour highlighted in blue while the fault lasts
           </span>
         </div>
 
         <TopologyGraph
-          topology={simTopology}
+          topology={topology}
           activeIncident={activeSimulationIncident}
           height="420px"
         />

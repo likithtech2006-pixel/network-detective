@@ -216,3 +216,14 @@ def test_live_mode_pings_real_devices(client: TestClient) -> None:
     finally:
         client.put("/api/network/mode", json={"mode": "simulation"})
         client.delete(f"/api/topology/nodes/{node_id}")
+
+
+def test_healing_switch_escalates_instead_of_rerouting(client: TestClient) -> None:
+    client.put("/api/config", json={"healing_enabled": False})
+    try:
+        client.post("/api/simulator/failure", json={"target_type": "link", "target_id": "link-b-c"})
+        incident = wait_for(lambda: finished_incident(client, "link-router-b-switch-c"))
+        assert incident["status"] == "escalated"
+        assert "Self-healing is turned off" in incident["resolution_notes"]
+    finally:
+        client.put("/api/config", json={"healing_enabled": True})

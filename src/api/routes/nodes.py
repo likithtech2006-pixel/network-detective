@@ -6,6 +6,7 @@ and retrieving historical and real-time telemetry metrics.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -113,7 +114,26 @@ metrics_router = APIRouter(prefix="/api/metrics", tags=["Metrics"])
 async def get_metrics_by_node(
     node_id: str,
     limit: int = Query(default=50, ge=1, le=1000),
+    minutes: float | None = Query(
+        default=None, gt=0, le=1440, description="Return samples from the last N minutes instead"
+    ),
+    max_points: int = Query(default=300, ge=10, le=2000, description="Downsample long windows"),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[MetricResponse]:
-    """Alias endpoint for fetching node metrics (supporting frontend clients)."""
-    return await get_node_metrics(node_id=node_id, limit=limit, offset=0, session=session)
+    """Node telemetry, newest first: the latest `limit` samples, or a time window.
+
+    A time window is thinned to at most `max_points` evenly spaced samples so a
+    24-hour chart stays light.
+    """
+    if minutes is None:
+        return await get_node_metrics(node_id=node_id, limit=limit, offset=0, session=session)
+
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    result = await session.execute(
+        select(Metric)
+        .where(Metric.node_id == node_id, Metric.recorded_at >= since)
+        .order_by(desc(Metric.recorded_at))
+    )
+    rows = result.scalars().all()
+    step = max(1, -(-len(rows) // max_points))  # ceiling division
+    return [MetricResponse.model_validate(m) for m in rows[::step]]

@@ -81,7 +81,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isConnected = false }) => {
                 className={({ isActive }) =>
                   `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold tracking-wide transition-all duration-200 ${
                     isActive
-                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                      ? 'bg-indigo-600 text-on-accent shadow-lg shadow-indigo-600/30'
                       : 'text-gray-400 hover:text-gray-100 hover:bg-gray-900/80'
                   }`
                 }

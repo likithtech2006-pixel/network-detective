@@ -65,6 +65,9 @@ class IncidentResolver:
         self.db = db
         self.stabilization_delay_sec = stabilization_delay_sec
 
+        # Turned off in Settings: a detour that fails verification is kept, not rolled back
+        self.rollback_on_failure = True
+
         # Extra context from the healer (how the detour was found), keyed by incident ID
         self._route_notes: dict[str, str] = {}
 
@@ -284,7 +287,8 @@ class IncidentResolver:
             reason: Failure description.
             details: Diagnostic information.
         """
-        if self.healer is not None and hasattr(self.healer, "rollback"):
+        can_rollback = self.healer is not None and hasattr(self.healer, "rollback")
+        if self.rollback_on_failure and can_rollback:
             logger.info("Triggering automatic rollback for incident {}...", incident.id)
             try:
                 await self.healer.rollback(incident, healing_action)

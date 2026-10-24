@@ -30,16 +30,16 @@ export const Dashboard: React.FC = () => {
   const { isConnected, alerts: wsAlerts, clearAlerts, metrics } = useWebSocket();
 
   const [stats, setStats] = useState<DashboardStats>({
-    total_nodes: 7,
-    nodes_up: 7,
+    total_nodes: 0,
+    nodes_up: 0,
     nodes_down: 0,
-    total_links: 9,
-    links_up: 9,
+    total_links: 0,
+    links_up: 0,
     active_incidents: 0,
-    resolved_incidents: 12,
-    avg_latency_ms: 18.4,
-    avg_packet_loss_pct: 0.1,
-    uptime_pct: 99.98,
+    resolved_incidents: 0,
+    avg_latency_ms: null,
+    avg_packet_loss_pct: null,
+    uptime_pct: 0,
   });
 
   const [recentIncidents, setRecentIncidents] = useState<Incident[]>([]);
@@ -242,11 +242,11 @@ export const Dashboard: React.FC = () => {
           </div>
           <div className="mt-2">
             <div className="text-2xl font-black text-white tracking-tight flex items-baseline gap-1">
-              <span>{stats.avg_latency_ms.toFixed(1)}</span>
+              <span>{stats.avg_latency_ms === null ? '—' : stats.avg_latency_ms.toFixed(1)}</span>
               <span className="text-xs font-mono text-gray-400">ms</span>
             </div>
-            <div className="text-[11px] text-emerald-400 mt-1 font-mono flex items-center gap-1">
-              <span>Target &lt; 35ms</span>
+            <div className="text-[11px] text-gray-400 mt-1 font-mono flex items-center gap-1">
+              <span>Last 100 probes</span>
             </div>
           </div>
         </div>
@@ -254,14 +254,16 @@ export const Dashboard: React.FC = () => {
         {/* Network Uptime */}
         <div className="bg-gray-900/80 border border-gray-800/80 rounded-2xl p-4 flex flex-col justify-between backdrop-blur shadow-lg">
           <div className="flex items-center justify-between text-gray-400">
-            <span className="text-xs font-medium">SLA Uptime</span>
+            <span className="text-xs font-medium">Devices Reachable</span>
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="mt-2">
             <div className="text-2xl font-black text-white tracking-tight">
               {stats.uptime_pct.toFixed(2)}%
             </div>
-            <div className="text-[11px] text-emerald-400 mt-1 font-mono">High Availability</div>
+            <div className="text-[11px] text-gray-400 mt-1 font-mono">
+              {stats.nodes_up} of {stats.total_nodes} answering
+            </div>
           </div>
         </div>
       </div>
@@ -313,7 +315,6 @@ export const Dashboard: React.FC = () => {
           <div className="max-w-md w-full">
             <NodeCard
               node={selectedNode}
-              metrics={metrics[selectedNode.id] ? [metrics[selectedNode.id]] : []}
               onClose={() => setSelectedNode(null)}
               onSimulateFail={handleSimulateFail}
               onRecover={handleRecover}

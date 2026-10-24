@@ -25,6 +25,9 @@ declare module 'flowinger' {
     nodes: FlowingerNode[];
     edges: FlowingerEdge[];
     onNodeClick?: (event: React.MouseEvent, node: FlowingerNode) => void;
+    onNodeDragStop?: (nodeId: string, position: { x: number; y: number }) => void;
+    onEdgeClick?: (edge: FlowingerEdge) => void;
+    onPaneClick?: (position: { x: number; y: number }) => void;
     nodeTypes?: Record<string, React.ComponentType<{ id: string; data: any; selected?: boolean }>>;
     children?: React.ReactNode;
     className?: string;

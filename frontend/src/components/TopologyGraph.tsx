@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Flowinger, Background, Controls, FlowingerNode, FlowingerEdge } from 'flowinger';
-import { Topology, Node, Incident } from '../types';
-import { Server, Router, Globe, Cpu, AlertCircle } from 'lucide-react';
+import { Topology, Node, Link, Incident } from '../types';
+import { Server, Router, Network, AlertCircle, Link2 } from 'lucide-react';
 
 interface TopologyGraphProps {
   topology: Topology;
@@ -10,7 +10,23 @@ interface TopologyGraphProps {
   activeIncident?: Incident | null;
   className?: string;
   height?: string | number;
+  /** Editing: a dragged device's new position */
+  onNodeMove?: (nodeId: string, position: { x: number; y: number }) => void;
+  /** Editing: a wire was clicked */
+  onLinkSelect?: (link: Link) => void;
+  selectedLinkId?: string | null;
+  /** Editing: the device a new wire starts from */
+  connectFromId?: string | null;
+  onPaneClick?: (position: { x: number; y: number }) => void;
+  /** Extra controls drawn over the canvas */
+  overlay?: React.ReactNode;
 }
+
+const RED = 'rgb(var(--c-red-500))';
+const SKY = 'rgb(var(--c-sky-400))';
+const AMBER = 'rgb(var(--c-amber-500))';
+const GREEN = 'rgb(var(--c-emerald-500))';
+const VIOLET = 'rgb(var(--c-violet-500))';
 
 /**
  * Custom Node renderer for Flowinger
@@ -22,32 +38,33 @@ const NetworkNodeComponent: React.FC<{
     isSelected: boolean;
     isAffected: boolean;
     isAlternate: boolean;
+    isConnectSource: boolean;
   };
 }> = ({ data }) => {
-  const { node, isSelected, isAffected, isAlternate } = data;
+  const { node, isSelected, isAffected, isAlternate, isConnectSource } = data;
 
   const status = (node.status || 'up').toLowerCase();
   const isDown = status === 'down' || isAffected;
   const isDegraded = status === 'degraded';
 
-  // Select appropriate icon
+  const iconClass = `w-5 h-5 ${isDown ? 'text-red-400' : isAlternate ? 'text-cyan-400' : ''}`;
   const getIcon = () => {
     switch (node.node_type?.toLowerCase()) {
-      case 'core_router':
-        return <Router className={`w-5 h-5 ${isDown ? 'text-red-400' : isAlternate ? 'text-cyan-400' : 'text-indigo-400'}`} />;
-      case 'gateway':
-        return <Globe className={`w-5 h-5 ${isDown ? 'text-red-400' : isAlternate ? 'text-cyan-400' : 'text-sky-400'}`} />;
       case 'server':
-        return <Server className={`w-5 h-5 ${isDown ? 'text-red-400' : isAlternate ? 'text-cyan-400' : 'text-emerald-400'}`} />;
+        return <Server className={`${iconClass} ${isDown || isAlternate ? '' : 'text-emerald-400'}`} />;
+      case 'switch':
+        return <Network className={`${iconClass} ${isDown || isAlternate ? '' : 'text-violet-400'}`} />;
       default:
-        return <Cpu className={`w-5 h-5 ${isDown ? 'text-red-400' : isAlternate ? 'text-cyan-400' : 'text-blue-400'}`} />;
+        return <Router className={`${iconClass} ${isDown || isAlternate ? '' : 'text-indigo-400'}`} />;
     }
   };
 
   return (
     <div
       className={`group relative flex flex-col min-w-[170px] max-w-[210px] rounded-xl border p-3 backdrop-blur-md transition-all duration-300 shadow-xl ${
-        isDown
+        isConnectSource
+          ? 'border-violet-500 bg-violet-950/60 ring-2 ring-violet-500/60'
+          : isDown
           ? 'border-red-500 bg-red-950/70 ring-2 ring-red-500/50 shadow-red-950/50'
           : isSelected
           ? 'border-blue-500 bg-gray-900/95 ring-2 ring-blue-500/50 shadow-blue-500/10'
@@ -99,12 +116,12 @@ const NetworkNodeComponent: React.FC<{
       </div>
 
       {/* Node Subtitle: IP & Type */}
-      <div className="mt-2 pt-2 border-t border-gray-800/60 flex items-center justify-between text-[11px] font-mono text-gray-400">
-        <span>{node.ip_address}</span>
-        <span className={`capitalize text-[10px] px-1.5 py-0.5 rounded ${
+      <div className="mt-2 pt-2 border-t border-gray-800/60 flex items-center justify-between gap-2 text-[11px] font-mono text-gray-400">
+        <span className="truncate">{node.ip_address}</span>
+        <span className={`capitalize text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 ${
           isDown ? 'bg-red-900/40 text-red-300' : 'bg-gray-800/80 text-gray-300'
         }`}>
-          {isDown ? 'OFFLINE' : node.node_type?.replace('_', ' ') || 'node'}
+          {isDown ? 'OFFLINE' : node.node_type || 'device'}
         </span>
       </div>
 
@@ -120,26 +137,14 @@ const NetworkNodeComponent: React.FC<{
           <span>⚡ DETOUR ROUTE</span>
         </div>
       )}
+      {isConnectSource && (
+        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-violet-300 font-semibold bg-violet-900/50 border border-violet-400/40 px-2 py-0.5 rounded">
+          <Link2 className="w-3 h-3 flex-shrink-0" />
+          <span>PICK THE OTHER END</span>
+        </div>
+      )}
     </div>
   );
-};
-
-// Deterministic fixed positions for known topology nodes to prevent layout shifts
-const FIXED_LAYOUT: Record<string, { x: number; y: number }> = {
-  // 7-Node Multi-Tier Mesh
-  'node-core-1': { x: 260, y: 70 },
-  'node-core-2': { x: 500, y: 70 },
-  'node-edge-1': { x: 120, y: 200 },
-  'node-edge-2': { x: 380, y: 200 },
-  'node-edge-3': { x: 640, y: 200 },
-  'node-gw-1': { x: 240, y: 330 },
-  'node-gw-2': { x: 520, y: 330 },
-  // 5-Node Campus Topology - Non-overlapping hierarchical layout
-  'router-a': { x: 90, y: 210 },
-  'router-b': { x: 360, y: 90 },
-  'switch-c': { x: 360, y: 330 },
-  'server-d': { x: 650, y: 90 },
-  'server-e': { x: 650, y: 330 },
 };
 
 export const TopologyGraph: React.FC<TopologyGraphProps> = ({
@@ -149,26 +154,20 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
   activeIncident,
   className = '',
   height = '100%',
+  onNodeMove,
+  onLinkSelect,
+  selectedLinkId,
+  connectFromId,
+  onPaneClick,
+  overlay,
 }) => {
-  // Convert nodes to Flowinger format with layout positioning
+  // Convert nodes to Flowinger format; positions come from the backend
   const nodes: FlowingerNode[] = useMemo(() => {
     if (!topology || !topology.nodes) return [];
 
     return topology.nodes.map((node, index) => {
-      // Prioritize explicit node.x, then fixed known coordinate, then tiered grid
-      const fixed = FIXED_LAYOUT[node.id];
-      const posX =
-        node.x ??
-        fixed?.x ??
-        (index % 3 === 0
-          ? 120
-          : index % 3 === 1
-          ? 380
-          : 640);
-      const posY =
-        node.y ??
-        fixed?.y ??
-        (80 + Math.floor(index / 3) * 140);
+      const posX = node.x ?? 120 + (index % 4) * 240;
+      const posY = node.y ?? 80 + Math.floor(index / 4) * 150;
 
       const isAffected =
         activeIncident?.affected_component === node.id ||
@@ -188,10 +187,11 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
           isSelected: selectedNodeId === node.id,
           isAffected,
           isAlternate,
+          isConnectSource: connectFromId === node.id,
         },
       };
     });
-  }, [topology, selectedNodeId, activeIncident]);
+  }, [topology, selectedNodeId, activeIncident, connectFromId]);
 
   // Convert links to Flowinger edges
   const edges: FlowingerEdge[] = useMemo(() => {
@@ -242,6 +242,7 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
         ? 'down'
         : (link.status || 'up').toLowerCase();
 
+      const isSelected = selectedLinkId === link.id;
       const bandwidth = link.bandwidth_mbps ?? (link as any).bandwidth ?? 100;
       const label = isSevered
         ? '✖ SEVERED'
@@ -260,20 +261,23 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
         data: {
           status: edgeStatus,
           isAlternate: isAlt,
+          link,
         },
         style: {
-          stroke: isSevered
-            ? '#ef4444'
+          stroke: isSelected
+            ? VIOLET
+            : isSevered
+            ? RED
             : isAlt
-            ? '#38bdf8'
+            ? SKY
             : edgeStatus === 'degraded'
-            ? '#f59e0b'
-            : '#10b981',
-          strokeWidth: isAlt ? 4 : isSevered ? 3 : 2,
+            ? AMBER
+            : GREEN,
+          strokeWidth: isSelected || isAlt ? 4 : isSevered ? 3 : 2,
         },
       };
     });
-  }, [topology, activeIncident]);
+  }, [topology, activeIncident, selectedLinkId]);
 
   const nodeTypes = useMemo(
     () => ({
@@ -288,6 +292,10 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
     }
   };
 
+  const handleEdgeClick = (edge: FlowingerEdge) => {
+    if (onLinkSelect && edge.data?.link) onLinkSelect(edge.data.link);
+  };
+
   return (
     <div
       className={`relative w-full rounded-2xl overflow-hidden border border-gray-800 bg-gray-950/70 shadow-2xl ${className}`}
@@ -298,8 +306,11 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
+        onNodeDragStop={onNodeMove}
+        onEdgeClick={onLinkSelect ? handleEdgeClick : undefined}
+        onPaneClick={onPaneClick}
       >
-        <Background color="#1e293b" gap={28} size={1.2} />
+        <Background gap={28} size={1.2} />
         <Controls />
       </Flowinger>
 
@@ -324,6 +335,17 @@ export const TopologyGraph: React.FC<TopologyGraphProps> = ({
           </div>
         )}
       </div>
+
+      {topology.nodes.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="text-center text-sm text-gray-400">
+            <p className="font-semibold text-gray-200">No devices yet</p>
+            <p className="mt-1 text-xs">Add a router, switch or server on the Topology page.</p>
+          </div>
+        </div>
+      )}
+
+      {overlay}
     </div>
   );
 };

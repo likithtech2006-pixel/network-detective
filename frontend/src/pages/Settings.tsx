@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getConfig, updateConfig } from '../services/api';
+import { getConfig, updateConfig, errorMessage } from '../services/api';
 import { SystemConfig } from '../types';
 import {
   Settings as SettingsIcon,
@@ -13,12 +13,13 @@ import {
   Radio,
 } from 'lucide-react';
 
+// Values from config/default.yaml, used by "Reset to defaults"
 const DEFAULT_CONFIG: SystemConfig = {
-  polling_interval_sec: 5,
-  latency_warning_ms: 40,
-  latency_critical_ms: 80,
+  polling_interval_sec: 0.5,
+  latency_warning_ms: 100,
+  latency_critical_ms: 200,
   packet_loss_warning_pct: 5,
-  packet_loss_critical_pct: 15,
+  packet_loss_critical_pct: 10,
   healing_enabled: true,
   auto_rollback: true,
 };
@@ -69,7 +70,7 @@ export const Settings: React.FC = () => {
     } catch (err: any) {
       setFeedback({
         type: 'error',
-        message: err?.message || 'Failed to update system configuration.',
+        message: errorMessage(err),
       });
     } finally {
       setIsSaving(false);
@@ -144,8 +145,9 @@ export const Settings: React.FC = () => {
               </label>
               <input
                 type="number"
-                min="1"
+                min="0.2"
                 max="60"
+                step="0.1"
                 value={config.polling_interval_sec}
                 onChange={(e) => handleChange('polling_interval_sec', Number(e.target.value))}
                 className="bg-gray-800/80 border border-gray-700 text-xs text-white rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-mono"
@@ -284,7 +286,7 @@ export const Settings: React.FC = () => {
           <button
             type="submit"
             disabled={isSaving}
-            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-lg shadow-indigo-600/30 transition-all disabled:opacity-50"
+            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-on-accent font-semibold text-xs shadow-lg shadow-indigo-600/30 transition-all disabled:opacity-50"
           >
             <Save className="w-4 h-4" />
             <span>{isSaving ? 'Saving Changes...' : 'Save Configuration'}</span>

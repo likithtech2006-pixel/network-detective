@@ -70,6 +70,9 @@ class SelfHealer:
         self.topology = topology
         self.db = db
 
+        # Turned off in Settings: faults are still detected but escalated, not rerouted
+        self.enabled = True
+
         # Concurrency guard: track incident IDs currently undergoing healing
         self._active_healings: set[str] = set()
         self._lock = asyncio.Lock()
@@ -170,6 +173,34 @@ class SelfHealer:
                     ),
                 },
             )
+
+            if not self.enabled:
+                incident.status = IncidentStatus.ESCALATED
+                incident.resolution_notes = (
+                    "Self-healing is turned off in Settings, so no reroute was attempted; "
+                    "an engineer has to fix this by hand."
+                )
+                healing_action = HealingAction(
+                    incident_id=incident.id,
+                    action_type=ActionType.ESCALATE,
+                    old_route=incident.original_path,
+                    new_route=None,
+                    result=ActionResult.FAILED,
+                    executed_at=datetime.now(timezone.utc),
+                )
+                await self._persist_healing(incident, healing_action)
+                await self.event_bus.publish(
+                    HEALING_COMPLETE,
+                    {
+                        "incident": incident,
+                        "incident_id": incident.id,
+                        "healing_action": healing_action,
+                        "success": False,
+                        "new_path": None,
+                        "old_path": incident.original_path,
+                    },
+                )
+                return healing_action
 
             topology = self.get_topology()
             component = incident.affected_component
@@ -462,10 +493,23 @@ class SelfHealer:
     ) -> str:
         """Explain to an engineer why no detour exists and what is cut off."""
         state, fix = ("down", "repair or restart") if is_down else ("degraded", "investigate")
-        reverse = [(v, u) for u, v in excluded_edges]
-        remaining = nx.restricted_view(topology, excluded_nodes, excluded_edges + reverse)
-        islands = sorted(nx.connected_components(remaining), key=len, reverse=True)
-        stranded = sorted(node for island in islands[1:] for node in island)
+        def core(nodes: list[str], edges: list[tuple[str, str]]) -> set[str]:
+            """Largest connected group of devices once the given elements are removed."""
+            view = nx.restricted_view(topology, nodes, edges + [(v, u) for u, v in edges])
+            islands = list(nx.connected_components(view))
+            return max(islands, key=len) if islands else set()
+
+        # Only devices that THIS failure disconnects from the rest, not earlier ones
+        if is_node_fault:
+            before = core(
+                [n for n in excluded_nodes if n != component],
+                [e for e in excluded_edges if component not in e],
+            )
+        else:
+            failed_link = set(excluded_edges[0]) if excluded_edges else set()
+            before = core(excluded_nodes, [e for e in excluded_edges if set(e) != failed_link])
+        after = core(excluded_nodes, excluded_edges)
+        stranded = sorted(before - after - {component})
         cut_off = ", ".join(stranded)
 
         if is_node_fault and stranded:

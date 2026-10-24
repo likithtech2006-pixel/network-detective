@@ -114,8 +114,8 @@ export interface DashboardStats {
   links_up: number;
   active_incidents: number;
   resolved_incidents: number;
-  avg_latency_ms: number;
-  avg_packet_loss_pct: number;
+  avg_latency_ms: number | null;
+  avg_packet_loss_pct: number | null;
   uptime_pct: number;
 }
 
@@ -156,4 +156,44 @@ export interface SimulateFailureRequest {
 export interface SimulateRecoverRequest {
   target_type: 'node' | 'link';
   target_id: string;
+}
+
+export type DeviceType = 'router' | 'switch' | 'server';
+
+export type NetworkMode = 'simulation' | 'live';
+
+export interface NodeCreateRequest {
+  name: string;
+  node_type: DeviceType;
+  ip_address: string;
+  x?: number;
+  y?: number;
+}
+
+export interface NodeUpdateRequest {
+  name?: string;
+  node_type?: DeviceType;
+  ip_address?: string;
+  x?: number;
+  y?: number;
+}
+
+export interface LinkCreateRequest {
+  source: string;
+  target: string;
+  weight?: number;
+  bandwidth_mbps?: number;
+}
+
+export interface DeviceSuggestion {
+  name: string;
+  node_type: DeviceType;
+  ip_address: string;
+  description: string;
+}
+
+export interface PingResult {
+  address: string;
+  reachable: boolean;
+  latency_ms: number | null;
 }

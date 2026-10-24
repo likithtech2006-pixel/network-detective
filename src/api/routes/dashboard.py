@@ -76,16 +76,16 @@ async def get_dashboard_stats(
     )
     recent_metrics = metrics_result.scalars().all()
 
-    if recent_metrics:
-        avg_latency = round(
-            sum(m.latency_ms for m in recent_metrics) / len(recent_metrics), 2
-        )
-        avg_loss = round(
-            sum(m.packet_loss_pct for m in recent_metrics) / len(recent_metrics), 2
-        )
-    else:
-        avg_latency = 5.2
-        avg_loss = 0.0
+    # Latency is averaged over probes that got a reply; unanswered probes count as loss
+    replied = [m for m in recent_metrics if m.packet_loss_pct < 100.0]
+    avg_latency = (
+        round(sum(m.latency_ms for m in replied) / len(replied), 2) if replied else None
+    )
+    avg_loss = (
+        round(sum(m.packet_loss_pct for m in recent_metrics) / len(recent_metrics), 2)
+        if recent_metrics
+        else None
+    )
 
     return DashboardStats(
         total_nodes=total_nodes,
