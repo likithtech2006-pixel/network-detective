@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from src.core.config import NetworkConfig, Settings, get_settings
+from src.core.config import get_settings
 from src.core.models import LinkStatus, NodeStatus
 from src.utils.logger import logger
 
@@ -43,8 +44,35 @@ class VirtualNetwork:
     via asyncio.Lock for concurrent probing and failure injection.
     """
 
-    DEFAULT_NODE_LATENCY_MS: float = 8.5
+    # Per-hop forwarding delay of a healthy device
+    DEFAULT_NODE_LATENCY_MS: float = 0.6
+    # Fallback for links with no weight or bandwidth configured
     DEFAULT_LINK_LATENCY_MS: float = 2.0
+    # Propagation delay per unit of configured link weight (weight stands in for distance)
+    PROPAGATION_MS_PER_WEIGHT: float = 2.0
+    # Frame size used for serialization delay (one full Ethernet MTU)
+    FRAME_BITS: int = 1500 * 8
+    # Healthy measurements vary by up to this fraction, like real ICMP round trips
+    JITTER_FRACTION: float = 0.05
+
+    @classmethod
+    def link_latency_ms(cls, weight: float, bandwidth_mbps: float) -> float:
+        """Baseline one-way latency of a link: propagation plus serialization of one frame.
+
+        Args:
+            weight: Configured link weight, used as a proxy for distance.
+            bandwidth_mbps: Link capacity in megabits per second.
+
+        Returns:
+            Latency in milliseconds.
+        """
+        serialization_ms = cls.FRAME_BITS / (max(bandwidth_mbps, 1.0) * 1000.0)
+        return round(cls.PROPAGATION_MS_PER_WEIGHT * weight + serialization_ms, 3)
+
+    def _jitter(self, latency_ms: float) -> float:
+        """Apply a small random variation to a healthy latency sample."""
+        spread = self._rng.uniform(-self.JITTER_FRACTION, self.JITTER_FRACTION)
+        return round(latency_ms * (1 + spread), 3)
 
     def __init__(self, config: Any = None) -> None:
         """Initialize VirtualNetwork with initial topology state.
@@ -64,6 +92,9 @@ class VirtualNetwork:
 
         # Concurrency lock
         self._lock = asyncio.Lock()
+
+        # Source of measurement jitter
+        self._rng = random.Random()
 
         # Initialize network from config
         self.setup_from_config(config)
@@ -158,7 +189,8 @@ class VirtualNetwork:
                 "status": LinkStatus.UP,
                 "weight": weight,
                 "bandwidth_mbps": bw,
-                "latency_ms": self.DEFAULT_LINK_LATENCY_MS,
+                "latency_ms": self.link_latency_ms(weight, bw),
+                "base_latency_ms": self.link_latency_ms(weight, bw),
                 "packet_loss_pct": 0.0,
             }
             self._links[(src, tgt)] = dict(link_data)
@@ -218,7 +250,7 @@ class VirtualNetwork:
         # Node is UP
         return SimulatedResponse(
             reachable=True,
-            latency_ms=node_data["simulated_latency_ms"],
+            latency_ms=self._jitter(node_data["simulated_latency_ms"]),
             packet_loss_pct=node_data["simulated_loss_pct"],
             status=status_val,
             details={"node_id": node_id, "ip": node_data["ip"]},
@@ -256,9 +288,10 @@ class VirtualNetwork:
                 details={"source": source, "target": target},
             )
 
+        latency = link_data.get("latency_ms", self.DEFAULT_LINK_LATENCY_MS)
         return SimulatedResponse(
             reachable=True,
-            latency_ms=link_data.get("latency_ms", self.DEFAULT_LINK_LATENCY_MS),
+            latency_ms=self._jitter(latency) if status_val == LinkStatus.UP.value else latency,
             packet_loss_pct=link_data.get("packet_loss_pct", 0.0),
             status=status_val,
             details={"source": source, "target": target},
@@ -360,10 +393,67 @@ class VirtualNetwork:
 
         for pair, data in self._links.items():
             data["status"] = LinkStatus.UP
-            data["latency_ms"] = self.DEFAULT_LINK_LATENCY_MS
+            data["latency_ms"] = data.get("base_latency_ms", self.DEFAULT_LINK_LATENCY_MS)
             data["packet_loss_pct"] = 0.0
 
         logger.info("VirtualNetwork: all simulated nodes and links reset to healthy defaults.")
+
+    def sync_topology(self, nodes: list[dict[str, Any]], links: list[dict[str, Any]]) -> None:
+        """Match the simulated network to an edited topology.
+
+        Devices and links that still exist keep their current state (an injected fault
+        stays injected); new ones start healthy and removed ones are dropped.
+
+        Args:
+            nodes: Dicts with id, name, ip_address and node_type.
+            links: Dicts with source, target, weight and bandwidth_mbps.
+        """
+        wanted_nodes = {str(n["id"]) for n in nodes}
+        for node_id in list(self._nodes):
+            if node_id not in wanted_nodes:
+                del self._nodes[node_id]
+        for n in nodes:
+            node_id = str(n["id"])
+            current = self._nodes.get(node_id)
+            if current is None:
+                self._nodes[node_id] = {
+                    "id": node_id,
+                    "status": NodeStatus.UP,
+                    "simulated_latency_ms": self.DEFAULT_NODE_LATENCY_MS,
+                    "simulated_loss_pct": 0.0,
+                }
+                current = self._nodes[node_id]
+            current.update(
+                name=n.get("name", node_id),
+                ip=n.get("ip_address", ""),
+                node_type=n.get("node_type", "router"),
+            )
+        self._ip_to_node = {
+            data["ip"]: node_id for node_id, data in self._nodes.items() if data.get("ip")
+        }
+
+        wanted_links: set[tuple[str, str]] = set()
+        for link in links:
+            src, tgt = str(link["source"]), str(link["target"])
+            weight = float(link.get("weight", 1.0))
+            bw = float(link.get("bandwidth_mbps", 100.0))
+            base = self.link_latency_ms(weight, bw)
+            for pair in ((src, tgt), (tgt, src)):
+                wanted_links.add(pair)
+                current = self._links.get(pair)
+                if current is None:
+                    self._links[pair] = {
+                        "status": LinkStatus.UP,
+                        "latency_ms": base,
+                        "packet_loss_pct": 0.0,
+                    }
+                    current = self._links[pair]
+                elif current.get("base_latency_ms") != base and current["status"] == LinkStatus.UP:
+                    current["latency_ms"] = base
+                current.update(weight=weight, bandwidth_mbps=bw, base_latency_ms=base)
+        for pair in list(self._links):
+            if pair not in wanted_links:
+                del self._links[pair]
 
     def get_all_nodes(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of all node simulation states."""

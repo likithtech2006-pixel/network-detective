@@ -11,7 +11,6 @@ from typing import Any
 from fastapi import APIRouter, Body
 from loguru import logger
 
-from src.api.schemas import ConfigUpdateRequest
 from src.core.config import get_settings
 
 router = APIRouter(prefix="/api/config", tags=["Configuration"])

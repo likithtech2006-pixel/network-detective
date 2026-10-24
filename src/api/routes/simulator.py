@@ -10,28 +10,26 @@ from datetime import datetime, timezone
 from typing import Any
 
 import networkx as nx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
+from loguru import logger
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loguru import logger
 from src.api.schemas import (
     MessageResponse,
     SimulateFailureRequest,
     SimulateRecoverRequest,
     SimulationStatusResponse,
 )
-from src.core.events import TOPOLOGY_UPDATED, event_bus
+from src.core.events import event_bus
 from src.core.models import (
     Incident,
     IncidentStatus,
-    Link,
     LinkStatus,
-    Node,
     NodeStatus,
     get_database,
 )
-from src.monitor.topology_builder import TopologyBuilder, get_topology
+from src.monitor.topology_builder import get_topology
 from src.simulation.failure_injector import FailureInjector
 from src.simulation.virtual_network import VirtualNetwork
 
@@ -128,18 +126,15 @@ def _rebuild_routes(request: Request, topology: nx.Graph) -> None:
 
 @router.post("/fail", response_model=MessageResponse, summary="Inject network failure")
 @router.post("/failure", response_model=MessageResponse, include_in_schema=False)
-async def inject_failure(
-    req: SimulateFailureRequest,
-    session: AsyncSession = Depends(get_db_session),
-) -> MessageResponse:
-    """Inject a simulated failure or degradation into a node or link.
+async def inject_failure(req: SimulateFailureRequest, request: Request) -> MessageResponse:
+    """Break a node or link in the simulated network.
 
-    The component is marked failed in the topology graph and database first, then the
-    FailureInjector publishes FAULT_DETECTED, which runs the self-healing loop.
+    Only the simulated physical layer changes here. The HealthMonitor has to notice the
+    failure on its probes, diagnose it and raise the incident that starts self-healing,
+    so the call returns at once and the outcome appears in /api/incidents shortly after.
     """
     injector = get_injector()
     topology = get_topology()
-    builder = TopologyBuilder()
 
     comp_type = req.component_type.lower()
     comp_id = req.component_id.strip()
@@ -150,69 +145,52 @@ async def inject_failure(
     logger.warning("API simulation request: fail {} '{}' (target={})", comp_type, comp_id, req.target_id)
 
     if comp_type == "node":
-        # Check node existence in topology
         if comp_id not in topology.nodes:
-            logger.warning("Node '{}' not found in active topology graph", comp_id)
+            raise HTTPException(status_code=404, detail=f"Unknown node '{comp_id}'")
+        if request.app.state.health_monitor.mode == "live":
+            raise HTTPException(
+                status_code=409,
+                detail="Live mode pings real devices: switch the device off or unplug it instead. "
+                "Wires can still be cut here.",
+            )
 
         fault = (req.fault_type or "node_down").lower()
         if fault in ["high_latency", "packet_loss", "link_degraded", "degraded"]:
-            builder.update_node_status(topology, comp_id, NodeStatus.DEGRADED)
-            await session.execute(update(Node).where(Node.id == comp_id).values(status=NodeStatus.DEGRADED))
-            inject = injector.inject_degradation(node_id=comp_id, latency_ms=350.0, loss_pct=25.0)
-            msg = f"Injected degradation onto node '{comp_id}'"
+            await injector.inject_degradation(node_id=comp_id, latency_ms=350.0, loss_pct=25.0)
+            msg = f"Degraded node '{comp_id}' (350 ms latency, 25% loss)"
         else:
-            builder.update_node_status(topology, comp_id, NodeStatus.DOWN)
-            await session.execute(update(Node).where(Node.id == comp_id).values(status=NodeStatus.DOWN))
-            inject = injector.inject_node_failure(comp_id)
-            msg = f"Injected failure onto node '{comp_id}' (status -> DOWN)"
+            await injector.inject_node_failure(comp_id)
+            msg = f"Crashed node '{comp_id}'"
 
     elif comp_type == "link":
         try:
             src, tgt = _parse_link_endpoints(comp_id, req.target_id, topology)
         except ValueError as err:
-            raise HTTPException(status_code=400, detail=str(err))
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        if not topology.has_edge(src, tgt):
+            raise HTTPException(status_code=404, detail=f"Unknown link '{comp_id}'")
 
-        link_id = f"link-{src}-{tgt}"
-        alt_link_id = f"link-{tgt}-{src}"
-
-        builder.update_link_status(topology, src, tgt, LinkStatus.DOWN)
-
-        # Update link status in database
-        await session.execute(
-            update(Link)
-            .where((Link.id == link_id) | (Link.id == alt_link_id) |
-                   ((Link.source_node_id == src) & (Link.target_node_id == tgt)) |
-                   ((Link.source_node_id == tgt) & (Link.target_node_id == src)))
-            .values(status=LinkStatus.DOWN)
-        )
-        inject = injector.inject_link_failure(src, tgt)
-        msg = f"Injected link cut between '{src}' and '{tgt}' (status -> DOWN)"
+        await injector.inject_link_failure(src, tgt)
+        msg = f"Cut link between '{src}' and '{tgt}'"
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported component_type: {comp_type}")
 
-    # Commit before healing starts: the healer persists incidents in its own sessions,
-    # and an open write transaction here would hold SQLite's lock against them.
-    await session.commit()
-    await event_bus.publish(TOPOLOGY_UPDATED, builder.get_topology_snapshot(topology))
-    await inject
-
     return MessageResponse(
         status="ok",
-        message=msg,
+        message=f"{msg}; the health monitor will detect it.",
         data={"component_type": comp_type, "component_id": comp_id, "target_id": req.target_id},
     )
 
 
 @router.post("/recover", response_model=MessageResponse, summary="Recover failed component")
-async def recover_component(
-    req: SimulateRecoverRequest,
-    request: Request,
-    session: AsyncSession = Depends(get_db_session),
-) -> MessageResponse:
-    """Restore a previously failed or degraded network component back to UP status."""
+async def recover_component(req: SimulateRecoverRequest) -> MessageResponse:
+    """Repair a failed or degraded component in the simulated network.
+
+    The HealthMonitor sees the component answer again, restores its status, fails routes
+    back to the primary paths and closes its incident.
+    """
     injector = get_injector()
     topology = get_topology()
-    builder = TopologyBuilder()
 
     comp_type = req.component_type.lower()
     comp_id = req.component_id.strip()
@@ -224,78 +202,30 @@ async def recover_component(
 
     if comp_type == "node":
         await injector.recover_node(comp_id)
-        builder.update_node_status(topology, comp_id, NodeStatus.UP)
-        await session.execute(update(Node).where(Node.id == comp_id).values(status=NodeStatus.UP))
-        await _close_open_incidents(session, [comp_id], f"Closed: node '{comp_id}' recovered.")
-        msg = f"Node '{comp_id}' restored to UP status"
+        msg = f"Node '{comp_id}' repaired"
 
     elif comp_type == "link":
         try:
             src, tgt = _parse_link_endpoints(comp_id, req.target_id, topology)
         except ValueError as err:
-            raise HTTPException(status_code=400, detail=str(err))
-
-        link_id = f"link-{src}-{tgt}"
-        alt_link_id = f"link-{tgt}-{src}"
-
+            raise HTTPException(status_code=400, detail=str(err)) from err
         await injector.recover_link(src, tgt)
-        builder.update_link_status(topology, src, tgt, LinkStatus.UP)
-
-        await session.execute(
-            update(Link)
-            .where((Link.id == link_id) | (Link.id == alt_link_id) |
-                   ((Link.source_node_id == src) & (Link.target_node_id == tgt)) |
-                   ((Link.source_node_id == tgt) & (Link.target_node_id == src)))
-            .values(status=LinkStatus.UP)
-        )
-        await _close_open_incidents(
-            session, [link_id, alt_link_id], f"Closed: link '{src}' <-> '{tgt}' recovered."
-        )
-        msg = f"Link '{src}' <-> '{tgt}' restored to UP status"
+        msg = f"Link '{src}' <-> '{tgt}' repaired"
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported component_type: {comp_type}")
 
-    await session.commit()
-    _rebuild_routes(request, topology)
-    await event_bus.publish(TOPOLOGY_UPDATED, builder.get_topology_snapshot(topology))
-
     return MessageResponse(
         status="ok",
-        message=msg,
+        message=f"{msg}; the health monitor will confirm recovery.",
         data={"component_type": comp_type, "component_id": comp_id},
     )
 
 
 @router.post("/reset", response_model=MessageResponse, summary="Reset network simulation")
-async def reset_simulation(
-    request: Request,
-    session: AsyncSession = Depends(get_db_session),
-) -> MessageResponse:
-    """Reset the entire simulated network back to a 100% healthy baseline state."""
+async def reset_simulation(request: Request) -> MessageResponse:
+    """Repair every simulated fault, mark all devices healthy and close open incidents."""
     logger.info("API simulation request: RESET entire network")
-    vn = get_sim_network()
-    vn.reset()
-
-    topology = get_topology()
-    builder = TopologyBuilder()
-
-    # Reset all node statuses in topology graph
-    for node_id in topology.nodes:
-        builder.update_node_status(topology, node_id, NodeStatus.UP)
-
-    # Reset all link statuses in topology graph
-    for u, v in topology.edges:
-        builder.update_link_status(topology, u, v, LinkStatus.UP)
-
-    # Reset database records
-    await session.execute(update(Node).values(status=NodeStatus.UP))
-    await session.execute(update(Link).values(status=LinkStatus.UP))
-    await _close_open_incidents(session, None, "Closed: network reset to healthy baseline.")
-    await session.commit()
-    _rebuild_routes(request, topology)
-
-    await event_bus.publish(TOPOLOGY_UPDATED, builder.get_topology_snapshot(topology))
-
+    await request.app.state.topology_service.reset_health("Closed: network reset to healthy baseline.")
     return MessageResponse(
         status="ok",
         message="Simulated network successfully reset to baseline healthy state",

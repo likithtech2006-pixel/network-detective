@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.core.events import EventBus, EventType, event_bus as default_event_bus
+from src.core.events import EventBus, EventType
+from src.core.events import event_bus as default_event_bus
 from src.core.models import Incident, LinkStatus
 from src.detector.alert_manager import AlertManager
 from src.detector.anomaly_detector import AnomalyDetector, AnomalyResult

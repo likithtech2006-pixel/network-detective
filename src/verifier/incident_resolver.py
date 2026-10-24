@@ -10,6 +10,8 @@ from src.core.events import (
     HEALING_COMPLETE,
     VERIFICATION_RESULT,
     EventBus,
+)
+from src.core.events import (
     event_bus as default_event_bus,
 )
 from src.core.models import (
@@ -20,10 +22,10 @@ from src.core.models import (
     Incident,
     IncidentStatus,
 )
-from src.verifier.connectivity_checker import ConnectivityChecker, PathCheckResult
-from src.verifier.validation_engine import ValidationEngine, ValidationResult
 from src.utils.helpers import format_path
 from src.utils.logger import logger
+from src.verifier.connectivity_checker import ConnectivityChecker, PathCheckResult
+from src.verifier.validation_engine import ValidationEngine, ValidationResult
 
 
 class IncidentResolver:
@@ -63,6 +65,9 @@ class IncidentResolver:
         self.db = db
         self.stabilization_delay_sec = stabilization_delay_sec
 
+        # Extra context from the healer (how the detour was found), keyed by incident ID
+        self._route_notes: dict[str, str] = {}
+
         # Subscribe to healing completion events
         self.event_bus.subscribe(HEALING_COMPLETE, self.on_healing_complete)
         logger.info("IncidentResolver subscribed to '{}' events.", HEALING_COMPLETE)
@@ -77,6 +82,8 @@ class IncidentResolver:
         try:
             incident, healing_action = self._unpack_event_data(data)
             if incident and healing_action:
+                if isinstance(data, dict) and data.get("route_note"):
+                    self._route_notes[incident.id] = data["route_note"]
                 await self.verify_and_resolve(incident, healing_action)
         except Exception as exc:
             logger.exception("Error during on_healing_complete verification: {}", exc)
@@ -120,9 +127,13 @@ class IncidentResolver:
                 healing_action.action_type,
                 incident.id,
             )
-            await self.escalate_incident(
-                incident, reason="Remediation could not find an alternate path."
+            # The healer explains what is cut off; fall back to a generic reason
+            reason = (
+                incident.resolution_notes
+                if healing_action.action_type == ActionType.ESCALATE and incident.resolution_notes
+                else "Remediation could not find an alternate path."
             )
+            await self.escalate_incident(incident, reason=reason)
             await self._publish_verification_result(
                 incident,
                 success=False,
@@ -198,6 +209,9 @@ class IncidentResolver:
             f"Verified successfully via alternate path [{format_path(path_to_verify)}]. "
             f"Latency: {measured_latency:.2f}ms, Loss: {path_result.packet_loss_pct:.1f}%."
         )
+        route_note = self._route_notes.pop(incident.id, None)
+        if route_note:
+            resolve_notes = f"{resolve_notes} {route_note}"
         await self.resolve_incident(incident, notes=resolve_notes)
 
         verification_payload = {

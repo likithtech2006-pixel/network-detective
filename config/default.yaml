@@ -20,6 +20,11 @@ thresholds:
   ping_timeout_sec: 3
   max_retries: 3
 
+monitoring:
+  # Probe every node and link of the simulated network this often;
+  # a failure must be seen thresholds.max_retries times in a row to count
+  interval_sec: 0.5
+
 scheduler:
   misfire_grace_time_sec: 15
   coalesce: true

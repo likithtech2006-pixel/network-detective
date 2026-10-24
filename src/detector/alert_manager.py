@@ -12,7 +12,8 @@ from email.mime.text import MIMEText
 from sqlalchemy import select
 
 from src.core.config import Settings, get_settings
-from src.core.events import EventBus, EventType, event_bus as default_event_bus
+from src.core.events import EventBus, EventType
+from src.core.events import event_bus as default_event_bus
 from src.core.models import (
     Database,
     Incident,
@@ -185,6 +186,28 @@ class AlertManager:
                 logger.warning("Failed to send SMTP alert for incident {}: {}", incident.id, exc)
 
         await asyncio.to_thread(_do_send)
+
+    def incident_for(self, component: str) -> str | None:
+        """Return the ID of the open incident raised for a component, if any."""
+        return self._component_to_incident.get(component)
+
+    def release_component(self, component: str) -> None:
+        """Stop suppressing alerts for a component once it is healthy again.
+
+        The incident record itself is left untouched; only the in-memory
+        deduplication entry is dropped, so a later failure raises a new incident.
+
+        Args:
+            component: Node ID or link ID that recovered.
+        """
+        incident_id = self._component_to_incident.pop(component, None)
+        if incident_id:
+            self._active_incidents.pop(incident_id, None)
+
+    def release_all(self) -> None:
+        """Drop every deduplication entry (used when the whole network is reset)."""
+        self._component_to_incident.clear()
+        self._active_incidents.clear()
 
     def get_active_incidents(self) -> list[Incident]:
         """Return list of all currently unresolved incidents in memory.

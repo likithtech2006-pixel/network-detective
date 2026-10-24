@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.core.config import Settings, get_settings
-from src.core.events import EventBus, EventType, event_bus as default_event_bus
+from src.core.events import EventBus, EventType
+from src.core.events import event_bus as default_event_bus
 from src.core.models import NodeStatus
 from src.monitor.metrics_collector import MetricsCollector
 from src.monitor.ping_probe import PingProbe, PingResult

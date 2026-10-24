@@ -20,7 +20,6 @@ from src.core.models import (
     NodeStatus,
 )
 
-
 # ==============================================================================
 # Common & Base Schemas
 # ==============================================================================
@@ -60,6 +59,47 @@ class NodeResponse(BaseSchema):
     last_seen: datetime | None = Field(default=None, description="Timestamp of last successful probe")
     x: float | None = Field(default=None, description="Layout X coordinate for visualization")
     y: float | None = Field(default=None, description="Layout Y coordinate for visualization")
+
+
+class NodeCreateRequest(BaseSchema):
+    """Add a device in the topology editor."""
+
+    name: str = Field(..., description="Display name, e.g. 'Core Router'")
+    node_type: Literal["router", "switch", "server"] = Field(..., description="Device type")
+    ip_address: str = Field(..., description="IP address or hostname that live mode pings")
+    x: float | None = Field(default=None, description="Canvas X position")
+    y: float | None = Field(default=None, description="Canvas Y position")
+
+
+class NodeUpdateRequest(BaseSchema):
+    """Change a device's name, type, address or canvas position."""
+
+    name: str | None = None
+    node_type: Literal["router", "switch", "server"] | None = None
+    ip_address: str | None = None
+    x: float | None = None
+    y: float | None = None
+
+
+class LinkCreateRequest(BaseSchema):
+    """Connect two devices with a wire."""
+
+    source: str = Field(..., description="Device ID at one end")
+    target: str = Field(..., description="Device ID at the other end")
+    weight: float = Field(default=1.0, gt=0, description="Routing cost; also sets simulated delay")
+    bandwidth_mbps: float = Field(default=100.0, gt=0, description="Link capacity in Mbit/s")
+
+
+class NetworkModeRequest(BaseSchema):
+    """Choose what the health monitor probes."""
+
+    mode: Literal["simulation", "live"]
+
+
+class PingRequest(BaseSchema):
+    """Test whether an address answers before adding it as a device."""
+
+    address: str
 
 
 class LinkResponse(BaseSchema):

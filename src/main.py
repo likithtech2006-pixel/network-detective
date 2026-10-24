@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,16 +21,18 @@ except ImportError:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
-
 from loguru import logger
+from sqlalchemy import func, select, update
+
 from src.api.routes import router as default_api_router
 from src.api.routes.config import router as config_router
 from src.api.routes.dashboard import router as dashboard_router
 from src.api.routes.incidents import router as incidents_router
+from src.api.routes.network import router as network_router
 from src.api.routes.nodes import metrics_router
 from src.api.routes.nodes import router as nodes_router
 from src.api.routes.simulator import (
+    get_injector,
     get_sim_network,
     simulator_alias_router,
 )
@@ -39,12 +42,22 @@ from src.api.routes.simulator import (
 from src.api.routes.topology import router as topology_router
 from src.api.websocket import router as websocket_router
 from src.core.config import Settings, get_settings
-from src.core.events import FAULT_DETECTED, HEALING_COMPLETE, TOPOLOGY_UPDATED, event_bus
-from src.core.models import Link, LinkStatus, Node, NodeStatus, get_database
+from src.core.events import FAULT_DETECTED, HEALING_COMPLETE, event_bus
+from src.core.models import (
+    Incident,
+    IncidentStatus,
+    Link,
+    LinkStatus,
+    Node,
+    NodeStatus,
+    get_database,
+)
+from src.detector.alert_manager import AlertManager
 from src.healer.route_manager import RouteManager
 from src.healer.self_healer import SelfHealer
 from src.healer.traffic_redirector import TrafficRedirector
-from src.monitor.topology_builder import get_topology
+from src.monitor.health_monitor import HealthMonitor
+from src.monitor.topology_service import TopologyService
 from src.utils.logger import setup_logger
 from src.verifier.connectivity_checker import ConnectivityChecker
 from src.verifier.incident_resolver import IncidentResolver
@@ -52,14 +65,19 @@ from src.verifier.validation_engine import ValidationEngine
 
 
 async def _seed_topology(settings: Settings) -> None:
-    """Seed initial network nodes and links from YAML configuration into the database."""
+    """Seed the YAML topology into an empty database.
+
+    After the first run the database is the source of truth: devices and wires are
+    added and removed in the topology editor, so YAML entries are not re-added.
+    """
     db = get_database(settings.database_url)
     async with db.session_factory() as session:
         # Check existing nodes
         result_nodes = await session.execute(select(Node))
         existing_nodes = {node.id: node for node in result_nodes.scalars().all()}
+        first_run = not existing_nodes
 
-        for node_cfg in settings.topology.nodes:
+        for node_cfg in settings.topology.nodes if first_run else []:
             if node_cfg.id not in existing_nodes:
                 logger.info("Seeding node: {} ({})", node_cfg.id, node_cfg.ip_address)
                 new_node = Node(
@@ -77,7 +95,7 @@ async def _seed_topology(settings: Settings) -> None:
         result_links = await session.execute(select(Link))
         existing_links = {link.id: link for link in result_links.scalars().all()}
 
-        for link_cfg in settings.topology.links:
+        for link_cfg in settings.topology.links if first_run else []:
             link_id = link_cfg.id or f"link-{link_cfg.source}-{link_cfg.target}"
             if link_id not in existing_links:
                 logger.info("Seeding link: {} -> {} (weight={})", link_cfg.source, link_cfg.target, link_cfg.weight)
@@ -91,17 +109,21 @@ async def _seed_topology(settings: Settings) -> None:
                 )
                 session.add(new_link)
 
+        # Monitoring restarts from scratch, so statuses and incidents left open by a
+        # previous run no longer describe anything; reset and close them.
+        await session.execute(update(Node).values(status=NodeStatus.UP))
+        await session.execute(update(Link).values(status=LinkStatus.UP))
+        await session.execute(
+            update(Incident)
+            .where(Incident.status != IncidentStatus.VERIFIED, Incident.resolved_at.is_(None))
+            .values(
+                resolved_at=datetime.now(timezone.utc),
+                resolution_notes=func.coalesce(Incident.resolution_notes + " ", "")
+                + "Closed when the server restarted.",
+            )
+        )
         await session.commit()
 
-    # Emit topology updated event
-    await event_bus.publish(
-        TOPOLOGY_UPDATED,
-        {
-            "nodes_count": len(settings.topology.nodes),
-            "links_count": len(settings.topology.links),
-            "topology_name": settings.topology.name,
-        },
-    )
 
 
 @contextlib.asynccontextmanager
@@ -137,7 +159,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 4. Wire the self-healing loop: FAULT_DETECTED -> SelfHealer -> HEALING_COMPLETE -> IncidentResolver
     route_manager = RouteManager()
-    route_manager.rebuild_routes(get_topology())
+    node_ips: dict[str, str] = {}
+    topology_service = TopologyService(
+        db=db,
+        virtual_network=get_sim_network(),
+        route_manager=route_manager,
+        node_ips=node_ips,
+        event_bus=event_bus,
+    )
+    await topology_service.load()
+    get_injector().announce_faults = False  # faults must be found by the HealthMonitor
     self_healer = SelfHealer(
         route_manager=route_manager,
         traffic_redirector=TrafficRedirector(route_manager, simulation_mode=True),
@@ -149,11 +180,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         validation_engine=ValidationEngine(),
         event_bus=event_bus,
         healer=self_healer,
-        node_ips={n.id: n.ip_address for n in settings.topology.nodes},
+        node_ips=node_ips,
         db=db,
+        stabilization_delay_sec=settings.verification_delay_sec,
     )
+    alert_manager = AlertManager(config=settings, db=db, event_bus_instance=event_bus)
+    health_monitor = HealthMonitor(
+        virtual_network=get_sim_network(),
+        alert_manager=alert_manager,
+        route_manager=route_manager,
+        db=db,
+        event_bus=event_bus,
+        interval_sec=settings.monitor_interval_sec,
+        confirmations=settings.thresholds.max_retries,
+    )
+    topology_service.health_monitor = health_monitor
+    topology_service.alert_manager = alert_manager
+    topology_service.incident_resolver = incident_resolver
+    mode = await topology_service.get_mode()
+    await topology_service.apply_mode(mode)
+    logger.info("Network mode: {}", mode)
+    health_monitor.start()
+    app.state.topology_service = topology_service
     app.state.self_healer = self_healer
     app.state.incident_resolver = incident_resolver
+    app.state.alert_manager = alert_manager
+    app.state.health_monitor = health_monitor
 
     # 5. Attach Event Bus
     app.state.event_bus = event_bus
@@ -163,6 +215,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown sequence
     logger.info("Shutting down application...")
+    await health_monitor.stop()
     event_bus.unsubscribe(FAULT_DETECTED, self_healer.on_fault_detected)
     event_bus.unsubscribe(HEALING_COMPLETE, incident_resolver.on_healing_complete)
     if scheduler and getattr(scheduler, "running", False):
@@ -200,6 +253,7 @@ def create_app() -> FastAPI:
     # Include API Routers
     app.include_router(default_api_router, prefix="/api")
     app.include_router(topology_router)
+    app.include_router(network_router)
     app.include_router(nodes_router)
     app.include_router(metrics_router)
     app.include_router(incidents_router)

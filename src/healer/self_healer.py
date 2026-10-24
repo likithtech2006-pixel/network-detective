@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -195,17 +196,18 @@ class SelfHealer:
                 or (topology.has_node(component) and not component.startswith("link-"))
             )
 
+            endpoints: tuple[str, str] | None = None
             if is_node_fault:
                 excluded_nodes.append(component)
+                element = component
             else:
                 # It is a link failure or link degradation
                 endpoints = self._resolve_link_endpoints(topology, component)
+                if not endpoints and incident.source_node and incident.target_node:
+                    endpoints = (incident.source_node, incident.target_node)
                 if endpoints:
                     excluded_edges.append(endpoints)
-                else:
-                    # Fallback to direct endpoints if specified
-                    if incident.source_node and incident.target_node:
-                        excluded_edges.append((incident.source_node, incident.target_node))
+                element = self.route_manager.link_key(*endpoints) if endpoints else component
 
             # Never detour through components that are already down from earlier faults
             for node_id, attrs in topology.nodes(data=True):
@@ -215,23 +217,21 @@ class SelfHealer:
                 if attrs.get("status") == "down":
                     excluded_edges.append((u, v))
 
-            # 4. Attempt to find alternate path for the primary flow
+            # 4. Choose the primary flow and find its detour
             primary_src = incident.source_node
             primary_tgt = incident.target_node
 
-            if is_node_fault and component in (primary_src, primary_tgt):
+            if endpoints:
+                # A failed link's own traffic is the primary flow; flows crossing it move below
+                primary_src, primary_tgt = endpoints
+                incident.source_node, incident.target_node = endpoints
+            elif is_node_fault and component in (primary_src, primary_tgt):
                 # Traffic to or from a failed node cannot be rerouted, so heal the
                 # first transit flow through it that still has a detour available.
                 for src, tgt in affected_routes:
                     if component in (src, tgt):
                         continue
-                    if self.path_finder.find_shortest_path(
-                        graph=topology,
-                        source=src,
-                        target=tgt,
-                        excluded_edges=excluded_edges,
-                        excluded_nodes=excluded_nodes,
-                    ):
+                    if self._detour(topology, src, tgt, element, excluded_nodes, excluded_edges)[0]:
                         primary_src, primary_tgt = src, tgt
                         incident.source_node, incident.target_node = src, tgt
                         break
@@ -241,25 +241,20 @@ class SelfHealer:
                 or [primary_src, primary_tgt]
             )
 
-            alternate_path = self.path_finder.find_shortest_path(
-                graph=topology,
-                source=primary_src,
-                target=primary_tgt,
-                excluded_edges=excluded_edges,
-                excluded_nodes=excluded_nodes,
+            started = time.perf_counter()
+            alternate_path, method = self._detour(
+                topology, primary_src, primary_tgt, element, excluded_nodes, excluded_edges
             )
+            compute_ms = (time.perf_counter() - started) * 1000
 
             # Also re-route any other affected flows registered in route_manager
+            moved = 0
             for src, tgt in affected_routes:
                 if (src, tgt) == (primary_src, primary_tgt):
                     continue
                 flow_old = self.route_manager.get_current_route(src, tgt) or [src, tgt]
-                flow_alt = self.path_finder.find_shortest_path(
-                    graph=topology,
-                    source=src,
-                    target=tgt,
-                    excluded_edges=excluded_edges,
-                    excluded_nodes=excluded_nodes,
+                flow_alt, _ = self._detour(
+                    topology, src, tgt, element, excluded_nodes, excluded_edges
                 )
                 if flow_alt:
                     await self.traffic_redirector.redirect(
@@ -268,12 +263,16 @@ class SelfHealer:
                         old_path=flow_old,
                         new_path=flow_alt,
                     )
+                    moved += 1
 
             # 5. Evaluate outcome
+            route_note: str | None = None
             if alternate_path:
                 logger.info(
-                    "Alternate route found for incident {}: [{}] (was [{}])",
+                    "Alternate route found for incident {} by {} in {:.3f} ms: [{}] (was [{}])",
                     incident.id,
+                    method,
+                    compute_ms,
                     format_path(alternate_path),
                     format_path(old_path),
                 )
@@ -285,6 +284,14 @@ class SelfHealer:
                     old_path=old_path,
                     new_path=alternate_path,
                 )
+
+                if alternate_path == old_path:
+                    route_note = "No active route used this component, so traffic was unaffected."
+                else:
+                    route_note = (
+                        f"Detour from the {method} in {compute_ms:.3f} ms; "
+                        f"{moved} other route(s) also moved."
+                    )
 
                 incident.original_path = old_path
                 incident.alternate_path = alternate_path
@@ -299,16 +306,16 @@ class SelfHealer:
                     executed_at=datetime.now(timezone.utc),
                 )
             else:
-                logger.error(
-                    "No alternate route available for incident {} between {} and {}. Escalating.",
-                    incident.id,
-                    primary_src,
-                    primary_tgt,
-                )
                 incident.status = IncidentStatus.ESCALATED
-                incident.resolution_notes = (
-                    f"No viable alternate path found bypassing component '{component}'."
+                incident.resolution_notes = self._escalation_reason(
+                    topology,
+                    component,
+                    is_node_fault,
+                    incident.fault_type == FaultType.NODE_DOWN,
+                    excluded_nodes,
+                    excluded_edges,
                 )
+                logger.error("Escalating incident {}: {}", incident.id, incident.resolution_notes)
 
                 healing_action = HealingAction(
                     incident_id=incident.id,
@@ -333,6 +340,7 @@ class SelfHealer:
                     "success": is_success,
                     "new_path": alternate_path,
                     "old_path": old_path,
+                    "route_note": route_note,
                 },
             )
 
@@ -397,6 +405,85 @@ class SelfHealer:
 
         await self._persist_healing(incident, rollback_action)
         return rollback_action
+
+    def _detour(
+        self,
+        topology: nx.Graph,
+        source: str,
+        target: str,
+        element: str,
+        excluded_nodes: list[str],
+        excluded_edges: list[tuple[str, str]],
+    ) -> tuple[list[str] | None, str]:
+        """Find a path that avoids every excluded element, preferring the pre-computed backup.
+
+        Args:
+            topology: Current topology graph.
+            source: Flow source node.
+            target: Flow destination node.
+            element: Failed element key (node ID or RouteManager.link_key).
+            excluded_nodes: Nodes the path must not use.
+            excluded_edges: Links the path must not use.
+
+        Returns:
+            (path or None, how it was found: "pre-computed backup" or "Dijkstra").
+        """
+        backup = self.route_manager.get_backup_route(source, target, element)
+        if backup and self._avoids(backup, excluded_nodes, excluded_edges):
+            return backup, "pre-computed backup"
+        path = self.path_finder.find_shortest_path(
+            graph=topology,
+            source=source,
+            target=target,
+            excluded_edges=excluded_edges,
+            excluded_nodes=excluded_nodes,
+        )
+        return path, "Dijkstra"
+
+    @staticmethod
+    def _avoids(
+        path: list[str], excluded_nodes: list[str], excluded_edges: list[tuple[str, str]]
+    ) -> bool:
+        """True when a path uses none of the excluded nodes or links."""
+        if any(node in excluded_nodes for node in path):
+            return False
+        blocked = {frozenset(edge) for edge in excluded_edges}
+        hops = zip(path[:-1], path[1:], strict=True)
+        return not any(frozenset(hop) in blocked for hop in hops)
+
+    @staticmethod
+    def _escalation_reason(
+        topology: nx.Graph,
+        component: str,
+        is_node_fault: bool,
+        is_down: bool,
+        excluded_nodes: list[str],
+        excluded_edges: list[tuple[str, str]],
+    ) -> str:
+        """Explain to an engineer why no detour exists and what is cut off."""
+        state, fix = ("down", "repair or restart") if is_down else ("degraded", "investigate")
+        reverse = [(v, u) for u, v in excluded_edges]
+        remaining = nx.restricted_view(topology, excluded_nodes, excluded_edges + reverse)
+        islands = sorted(nx.connected_components(remaining), key=len, reverse=True)
+        stranded = sorted(node for island in islands[1:] for node in island)
+        cut_off = ", ".join(stranded)
+
+        if is_node_fault and stranded:
+            return (
+                f"Device '{component}' is {state} and cuts off {cut_off}; no other path "
+                f"reaches it. {fix.capitalize()} '{component}'."
+            )
+        if is_node_fault:
+            return (
+                f"Device '{component}' is {state}. No other traffic passes through it, so there "
+                f"is nothing to reroute; {fix} the device."
+            )
+        if stranded:
+            return (
+                f"Link '{component}' was the only connection to {cut_off}, which stays "
+                f"unreachable until the link is repaired."
+            )
+        return f"No path avoids the failed components around '{component}'."
 
     def _resolve_link_endpoints(
         self, graph: nx.Graph, component: str

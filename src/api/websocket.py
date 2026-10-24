@@ -23,7 +23,7 @@ from src.core.events import (
     VERIFICATION_RESULT,
     event_bus,
 )
-from src.monitor.topology_builder import TopologyBuilder, get_topology
+from src.monitor.topology_builder import TopologyBuilder
 
 router = APIRouter(tags=["WebSocket"])
 

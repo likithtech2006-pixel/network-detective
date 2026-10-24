@@ -20,6 +20,8 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    inspect,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.ext.asyncio import (
@@ -29,7 +31,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
 
 # ==============================================================================
 # Shared Enums
@@ -129,6 +130,9 @@ class Node(Base):
         index=True,
     )
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Canvas position chosen in the topology editor (None = automatic layout)
+    pos_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pos_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
@@ -163,6 +167,15 @@ class Node(Base):
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class AppSetting(Base):
+    """Small key/value store for settings changed at runtime (e.g. the network mode)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(256), nullable=False)
 
 
 class Link(Base):
@@ -367,6 +380,23 @@ class HealingAction(Base):
 # ==============================================================================
 
 
+def _add_missing_columns(sync_conn: Any) -> None:
+    """Add nullable columns that exist on a model but not yet in an older database file.
+
+    create_all() never alters existing tables, so a database made by an earlier version
+    would otherwise fail on the new columns.
+    """
+    inspector = inspect(sync_conn)
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {col["name"] for col in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name not in existing and column.nullable:
+                col_type = column.type.compile(dialect=sync_conn.dialect)
+                sync_conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} {col_type}"))
+
+
 class Database:
     """Asynchronous database manager handling engine initialization, schema creation, and sessions."""
 
@@ -402,9 +432,10 @@ class Database:
         return self._session_factory
 
     async def create_all(self) -> None:
-        """Create all registered database tables if they do not exist."""
+        """Create missing tables, and add columns introduced after a table was first created."""
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_add_missing_columns)
 
     async def drop_all(self) -> None:
         """Drop all tables (used primarily in test fixtures)."""

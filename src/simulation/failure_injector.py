@@ -47,6 +47,10 @@ class FailureInjector:
         self.virtual_network = virtual_network
         self.event_bus = event_bus or default_event_bus
 
+        # When False, faults only change the simulated network and the HealthMonitor
+        # has to detect them; when True, FAULT_DETECTED is announced immediately.
+        self.announce_faults = True
+
         # History log of injected events: list of event dicts
         self._history: list[dict[str, Any]] = []
 
@@ -80,7 +84,7 @@ class FailureInjector:
         }
         self._history.append(record)
 
-        if self.event_bus:
+        if self.event_bus and self.announce_faults:
             await self.event_bus.publish(
                 FAULT_DETECTED,
                 {
@@ -133,7 +137,7 @@ class FailureInjector:
         }
         self._history.append(record)
 
-        if self.event_bus:
+        if self.event_bus and self.announce_faults:
             await self.event_bus.publish(
                 FAULT_DETECTED,
                 {
@@ -195,7 +199,7 @@ class FailureInjector:
         }
         self._history.append(record)
 
-        if self.event_bus:
+        if self.event_bus and self.announce_faults:
             await self.event_bus.publish(
                 FAULT_DETECTED,
                 {

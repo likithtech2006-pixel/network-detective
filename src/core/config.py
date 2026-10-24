@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -113,6 +114,12 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="API host bind address")
     port: int = Field(default=8000, description="API port")
     polling_interval_sec: int = Field(default=5, description="Network polling interval in seconds")
+    monitor_interval_sec: float = Field(
+        default=0.5, description="Health monitor probe interval for the simulated network, in seconds"
+    )
+    verification_delay_sec: float = Field(
+        default=2.0, description="Wait for route convergence before verifying a healed path, in seconds"
+    )
     log_level: str = Field(default="INFO", description="Log level: DEBUG, INFO, WARNING, ERROR")
 
     # Database Settings
@@ -169,6 +176,12 @@ class Settings(BaseSettings):
             init_data["polling_interval_sec"] = default_data["polling_interval_sec"]
         if "log_level" in default_data:
             init_data["log_level"] = default_data["log_level"]
+        monitoring = default_data.get("monitoring")
+        if isinstance(monitoring, dict) and "interval_sec" in monitoring:
+            init_data["monitor_interval_sec"] = monitoring["interval_sec"]
+        healing = default_data.get("self_healing")
+        if isinstance(healing, dict) and "verification_delay_sec" in healing:
+            init_data["verification_delay_sec"] = healing["verification_delay_sec"]
         if "database" in default_data and isinstance(default_data["database"], dict):
             if "url" in default_data["database"]:
                 init_data["database_url"] = default_data["database"]["url"]
@@ -193,8 +206,11 @@ class Settings(BaseSettings):
                 links=links,
             )
 
-        # Environment variables and .env will override any YAML defaults via pydantic-settings
-        # Pass init_data to constructor
+        # Environment variables and .env override YAML defaults. Constructor arguments would
+        # otherwise win over both, so drop any YAML value that the environment also sets.
+        env_keys = {k.lower() for k in os.environ}
+        env_keys |= {k.lower() for k in dotenv_values(project_root / ".env")}
+        init_data = {k: v for k, v in init_data.items() if k not in env_keys}
         return cls(**init_data)
 
 

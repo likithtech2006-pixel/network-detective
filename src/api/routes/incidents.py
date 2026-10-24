@@ -6,7 +6,6 @@ remediation history with healing actions, filtering active incidents, and statis
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,8 +20,6 @@ from src.api.schemas import (
     IncidentStatsResponse,
 )
 from src.core.models import (
-    FaultType,
-    HealingAction,
     Incident,
     IncidentStatus,
     get_database,

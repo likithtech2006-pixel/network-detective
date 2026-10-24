@@ -31,6 +31,9 @@ class RouteManager:
         # Active routing table: (source, target) -> [node_1, node_2, ..., node_n]
         self._routing_table: dict[tuple[str, str], list[str]] = {}
 
+        # Fast-reroute table: (source, target, failed element) -> pre-computed detour
+        self._backup_routes: dict[tuple[str, str, str], list[str]] = {}
+
         # History tracking: (source, target) -> list of record dicts
         self._history: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
 
@@ -230,6 +233,54 @@ class RouteManager:
         )
         self._routing_table.clear()
         self.set_initial_routes_from_graph(healthy)
+        self._precompute_backups(healthy)
+
+    @staticmethod
+    def link_key(u: str, v: str) -> str:
+        """Direction-independent key for a link, used to index backup routes."""
+        a, b = sorted((u, v))
+        return f"{a}|{b}"
+
+    def _precompute_backups(self, graph: nx.Graph) -> None:
+        """Store, for every route and every link or transit device on it, the best detour avoiding it.
+
+        This mirrors fast-reroute in production routers: the detour is ready before
+        anything fails, so healing is a table lookup instead of a fresh Dijkstra run.
+
+        Args:
+            graph: Healthy topology the current routes were computed on.
+        """
+        self._backup_routes.clear()
+        for (src, tgt), path in self._routing_table.items():
+            for u, v in zip(path[:-1], path[1:], strict=True):
+                view = nx.restricted_view(graph, [], [(u, v), (v, u)])
+                self._store_backup(view, src, tgt, self.link_key(u, v))
+            for node in path[1:-1]:
+                view = nx.restricted_view(graph, [node], [])
+                self._store_backup(view, src, tgt, node)
+        logger.info("Pre-computed {} backup routes.", len(self._backup_routes))
+
+    def _store_backup(self, view: nx.Graph, src: str, tgt: str, element: str) -> None:
+        """Record the shortest path in a view that already excludes one element."""
+        try:
+            self._backup_routes[(src, tgt, element)] = nx.dijkstra_path(
+                view, source=src, target=tgt, weight="weight"
+            )
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            pass
+
+    def get_backup_route(self, source: str, target: str, element: str) -> list[str] | None:
+        """Return the pre-computed detour for a flow when one element fails.
+
+        Args:
+            source: Flow source node.
+            target: Flow destination node.
+            element: Failed node ID, or a link key from link_key().
+
+        Returns:
+            Backup path, or None if no detour was computed for that failure.
+        """
+        return self._backup_routes.get((source, target, element))
 
     def _parse_link_component(self, link_component: str) -> tuple[str, str] | None:
         """Helper to extract endpoints from a link string like 'link-a-b' or 'a-b'.
