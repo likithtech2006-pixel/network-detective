@@ -1,0 +1,73 @@
+version: "3.8"
+
+services:
+  # Backend API & Self-Healing Engine
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: network-detective-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - HOST=0.0.0.0
+      - PORT=8000
+      - POLLING_INTERVAL=5
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=sqlite+aiosqlite:///./network_detective.db
+      # If using postgres profile:
+      # - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/network_detective
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - backend_data:/app
+    restart: unless-stopped
+    networks:
+      - network-detective-net
+
+  # Next.js / React Frontend Dashboard
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: network-detective-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000/api/ws
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - network-detective-net
+
+  # Optional PostgreSQL database service (activate with: docker compose --profile postgres up)
+  postgres:
+    image: postgres:15-alpine
+    container_name: network-detective-postgres
+    profiles:
+      - postgres
+      - full
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=network_detective
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - network-detective-net
+
+networks:
+  network-detective-net:
+    driver: bridge
+
+volumes:
+  backend_data:
+  postgres_data:

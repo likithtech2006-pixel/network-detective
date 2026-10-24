@@ -1,0 +1,33 @@
+# Default operational configuration for Network Detective
+
+app_name: "Network Detective & Self-Healing Network"
+environment: "development"
+debug: true
+host: "0.0.0.0"
+port: 8000
+polling_interval_sec: 5
+log_level: "INFO"
+
+database:
+  url: "sqlite+aiosqlite:///./network_detective.db"
+  echo: false
+
+thresholds:
+  latency_warn_ms: 100
+  latency_critical_ms: 200
+  packet_loss_warn_pct: 5
+  packet_loss_critical_pct: 10
+  ping_timeout_sec: 3
+  max_retries: 3
+
+scheduler:
+  misfire_grace_time_sec: 15
+  coalesce: true
+  max_instances: 3
+
+self_healing:
+  auto_remediation_enabled: true
+  max_reroute_attempts: 3
+  verification_delay_sec: 2
+  verification_timeout_sec: 10
+  rollback_on_failure: true

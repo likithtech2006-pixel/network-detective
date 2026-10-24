@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+  }
+
+  body {
+    background-color: #030712;
+    color: #f3f4f6;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #111827;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* Status color utilities */
+.status-up {
+  color: #10b981;
+}
+
+.status-down {
+  color: #ef4444;
+}
+
+.status-degraded {
+  color: #f59e0b;
+}
+
+.bg-status-up {
+  background-color: #10b981;
+}
+
+.bg-status-down {
+  background-color: #ef4444;
+}
+
+.bg-status-degraded {
+  background-color: #f59e0b;
+}
+
+/* Pulsing alert animation */
+@keyframes alertPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+}
+
+.alert-pulse-critical {
+  animation: alertPulse 1.8s infinite;
+}
+
+@keyframes healingGlow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(59, 130, 246, 0.8);
+  }
+}
+
+.healing-glow {
+  animation: healingGlow 2s infinite;
+}
+
+/* SVG stroke dash animation for traffic flow */
+@keyframes dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
