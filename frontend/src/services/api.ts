@@ -17,10 +17,16 @@ import {
 } from '../types';
 
 /**
+ * Backend origin when it is hosted separately (e.g. https://api.example.com);
+ * empty means the same host, through the Vite proxy or a reverse proxy
+ */
+export const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+
+/**
  * Axios instance preconfigured for backend API requests
  */
 export const api = axios.create({
-  baseURL: '/api',
+  baseURL: `${API_ORIGIN}/api`,
   headers: {
     'Content-Type': 'application/json',
   },

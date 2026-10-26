@@ -121,6 +121,10 @@ class Settings(BaseSettings):
         default=2.0, description="Wait for route convergence before verifying a healed path, in seconds"
     )
     log_level: str = Field(default="INFO", description="Log level: DEBUG, INFO, WARNING, ERROR")
+    allow_live_mode: bool = Field(
+        default=True,
+        description="Allow live mode and pinging real addresses; turn off on a public deployment",
+    )
 
     # Database Settings
     database_url: str = Field(

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Topology, Alert, Metric, WebSocketMessage, IncidentStatus } from '../types';
+import { API_ORIGIN } from '../services/api';
 
 interface UseWebSocketReturn {
   lastMessage: WebSocketMessage | null;
@@ -26,6 +27,7 @@ export function useWebSocket(url?: string): UseWebSocketReturn {
   // Compute WebSocket URL
   const getWsUrl = useCallback(() => {
     if (url) return url;
+    if (API_ORIGIN) return `${API_ORIGIN.replace(/^http/, 'ws')}/ws/live`;
     if (typeof window !== 'undefined') {
       const loc = window.location;
       // If served via Vite proxy or reverse proxy on port 3000, connect through /ws/live

@@ -1,0 +1,16 @@
+# Render blueprint for the backend API (the dashboard is deployed separately on Vercel)
+services:
+  - type: web
+    name: network-detective-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install .
+    startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # A public server must not ping arbitrary addresses for visitors; simulation only
+      - key: ALLOW_LIVE_MODE
+        value: "false"

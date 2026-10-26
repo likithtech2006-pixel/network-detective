@@ -198,6 +198,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     topology_service.alert_manager = alert_manager
     topology_service.incident_resolver = incident_resolver
     mode = await topology_service.get_mode()
+    if mode == "live" and not settings.allow_live_mode:
+        mode = "simulation"
     await topology_service.apply_mode(mode)
     logger.info("Network mode: {}", mode)
     health_monitor.start()

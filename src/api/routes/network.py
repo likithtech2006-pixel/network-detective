@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from src.api.schemas import NetworkModeRequest, PingRequest
+from src.core.config import get_settings
 from src.monitor.live_probe import LiveProber
 from src.monitor.topology_service import TopologyError, TopologyService
 
@@ -18,21 +19,37 @@ router = APIRouter(prefix="/api/network", tags=["Network"])
 
 _prober = LiveProber(timeout_sec=1.0)
 
+LIVE_DISABLED = (
+    "Live mode is turned off on this public demo. "
+    "Run Network Detective on your own computer to ping real devices."
+)
+
 
 def _service(request: Request) -> TopologyService:
     return request.app.state.topology_service
+
+
+def _require_live_allowed() -> None:
+    if not get_settings().allow_live_mode:
+        raise HTTPException(status_code=403, detail=LIVE_DISABLED)
 
 
 @router.get("/mode", summary="Get the network mode")
 async def get_mode(request: Request) -> dict[str, Any]:
     """Return whether the monitor probes the simulation or pings real devices."""
     monitor = request.app.state.health_monitor
-    return {"mode": monitor.mode, "interval_sec": monitor.interval_sec}
+    return {
+        "mode": monitor.mode,
+        "interval_sec": monitor.interval_sec,
+        "live_allowed": get_settings().allow_live_mode,
+    }
 
 
 @router.put("/mode", summary="Switch the network mode")
 async def set_mode(req: NetworkModeRequest, request: Request) -> dict[str, Any]:
     """Switch modes. All devices start healthy again and open incidents are closed."""
+    if req.mode == "live":
+        _require_live_allowed()
     try:
         await _service(request).set_mode(req.mode)
     except TopologyError as err:
@@ -43,6 +60,7 @@ async def set_mode(req: NetworkModeRequest, request: Request) -> dict[str, Any]:
 @router.post("/ping", summary="Ping an address once")
 async def ping(req: PingRequest) -> dict[str, Any]:
     """Send one real ICMP echo request, e.g. to test an address before adding it."""
+    _require_live_allowed()
     sample = await _prober.ping(req.address.strip())
     return {
         "address": req.address.strip(),
@@ -84,6 +102,8 @@ def _local_ip() -> str | None:
 async def suggestions() -> list[dict[str, str]]:
     """Devices that are reachable from this computer and useful for a live demo."""
     found: list[dict[str, str]] = []
+    if not get_settings().allow_live_mode:
+        return found
     gateway = await _default_gateway()
     if gateway:
         found.append({"name": "Home Router", "node_type": "router", "ip_address": gateway,
