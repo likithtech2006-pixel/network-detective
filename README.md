@@ -2,6 +2,8 @@
 
 An autonomous, self-healing network monitoring and remediation system. Network Detective continuously monitors network topology health, calculates latency and packet loss metrics, diagnoses root causes of failures using graph algorithms and heuristic rules, and autonomously executes self-healing rerouting strategies with rollback safeguards.
 
+**Live demo:** [network-detective-phi.vercel.app](https://network-detective-phi.vercel.app) (dashboard on Vercel, API on Render's free tier: the first visit after 15 idle minutes takes about a minute to wake up). The public demo runs in simulation mode only; run it locally to monitor real devices.
+
 ---
 
 ## 🚀 Key Features
